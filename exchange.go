@@ -37,7 +37,7 @@ var (
 
 // Exchange represents the collection of the client channels and topics with their subscribers.
 type Exchange struct {
-	channels *mapStore
+	channels *kvStore
 	subscriptions
 }
 
@@ -45,7 +45,7 @@ type Exchange struct {
 func New() *Exchange {
 	return &Exchange{
 		//Authenticator: auth,
-		channels: newMapStore(),
+		channels: newkvStore(),
 		subscriptions: subscriptions{
 			subsr: make(map[string]*topic),
 		},
