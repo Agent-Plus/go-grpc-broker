@@ -1,0 +1,50 @@
+syntax = "proto3";
+
+option go_package = "github.com/Agent-Plus/go-grpc-broker/api";
+package api;
+
+
+// Identity represents remote application credentials
+message Identity {
+    string id = 1;
+    string secret = 2;
+}
+
+// Token represents session identifier issued to the authenticated application
+message Token {
+    string key = 1;
+}
+
+// Message represents message on the exchange
+message Message {
+    bytes body = 1;
+    string contentType = 2;
+    string corId = 3;
+    string id = 4;
+    map<string, string> headers = 5;
+}
+
+message PublishRequest {
+    Token token = 1;
+    string topic = 2;
+    Message message = 3;
+}
+
+message PublishResponse {}
+
+// Subscription represents 
+message SubscribeRequest {
+    Token token = 1;
+    string name = 2;
+    string tag = 3;
+    bool exclusive = 4;
+}
+
+message SubscribeResponse {}
+
+service Exchange {
+    rpc Authenticate(Identity) returns (Token);
+    rpc Consume(Token) returns (stream Message);
+    rpc Publish(PublishRequest) returns (PublishResponse);
+    rpc Subscribe(SubscribeRequest) returns (SubscribeResponse);
+}
