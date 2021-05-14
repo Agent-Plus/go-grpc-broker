@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"net"
+	"strings"
 
 	"github.com/Agent-Plus/go-grpc-broker/api"
+	"github.com/golang/protobuf/ptypes/empty"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -74,10 +76,24 @@ func (s *ExchangeServer) Authenticate(ctx context.Context, identity *api.Identit
 	}, nil
 }
 
+func tkFromHeader(ctx context.Context) string {
+	meta, _ := metadata.FromIncomingContext(ctx)
+
+	if v, ok := meta["authorization"]; ok && len(v) > 0 {
+		tok := v[0]
+		if len(tok) > 6 && strings.ToLower(tok[:7]) == "bearer " {
+			return tok[7:]
+		}
+	}
+
+	return ""
+}
+
 // Consume implements api.ExchangeServer interface to start pulling messages from
 // the topic which client was subscribed earlier.
-func (m *ExchangeServer) Consume(tk *api.Token, stream api.Exchange_ConsumeServer) error {
-	ch, err := m.Channel(tk.Key)
+func (m *ExchangeServer) Consume(_ *empty.Empty, stream api.Exchange_ConsumeServer) error {
+	tk := tkFromHeader(stream.Context())
+	ch, err := m.Channel(tk)
 	if err != nil {
 		return err
 	}

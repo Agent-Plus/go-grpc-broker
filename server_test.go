@@ -10,11 +10,13 @@ import (
 	"testing"
 
 	"github.com/Agent-Plus/go-grpc-broker/api"
+	"github.com/golang/protobuf/ptypes/empty"
 
 	uuid "github.com/satori/go.uuid"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
@@ -189,7 +191,8 @@ func TestConsume(t *testing.T) {
 		wg     sync.WaitGroup
 	)
 
-	stream, err = client.Consume(ctx, tk)
+	ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+tk.Key)
+	stream, err = client.Consume(ctx, &empty.Empty{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,7 +294,8 @@ func TestRPCDialog(t *testing.T) {
 		defer wg.Done()
 
 		var err error
-		cl.stream, err = cl.ch.Consume(cl.ctx, cl.tk)
+		ctx := metadata.AppendToOutgoingContext(cl.ctx, "authorization", "Bearer "+cl.tk.Key)
+		cl.stream, err = cl.ch.Consume(ctx, &empty.Empty{})
 		if err != nil {
 			t.Fatal(err)
 		}

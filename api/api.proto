@@ -3,6 +3,7 @@ syntax = "proto3";
 option go_package = "github.com/Agent-Plus/go-grpc-broker/api";
 package api;
 
+import "google/protobuf/empty.proto";
 
 // Identity represents remote application credentials
 message Identity {
@@ -44,7 +45,7 @@ message SubscribeResponse {}
 
 service Exchange {
     rpc Authenticate(Identity) returns (Token);
-    rpc Consume(Token) returns (stream Message);
+    rpc Consume(google.protobuf.Empty) returns (stream Message);
     rpc Publish(PublishRequest) returns (PublishResponse);
     rpc Subscribe(SubscribeRequest) returns (SubscribeResponse);
 }
