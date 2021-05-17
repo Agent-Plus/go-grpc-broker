@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"strings"
 
 	"github.com/Agent-Plus/go-grpc-broker/api"
 	"github.com/golang/protobuf/ptypes/empty"
@@ -65,7 +66,7 @@ type Message struct {
 	Body        []byte
 	ContentType string
 	CorId       string
-	Headers     map[string]string
+	Headers     Header
 	Id          string
 }
 
@@ -125,9 +126,9 @@ func readStrem(stream api.Exchange_ConsumeClient, worker *streamWorker) {
 			}
 
 			if ln := len(msg.Headers); ln > 0 {
-				m.Headers = make(map[string]string, ln)
+				m.Headers = make(Header, ln)
 				for k, v := range msg.Headers {
-					m.Headers[k] = v
+					m.Headers[k] = strings.Split(v, ",")
 				}
 			}
 
@@ -155,7 +156,7 @@ func (ec *ExchangeClient) Publish(topic string, msg Message) error {
 	if ln := len(msg.Headers); ln > 0 {
 		m.Headers = make(map[string]string, ln)
 		for k, v := range msg.Headers {
-			m.Headers[k] = v
+			m.Headers[k] = strings.Join(v, ",")
 		}
 	}
 
