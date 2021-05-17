@@ -19,6 +19,14 @@ Fanout mode idea is to deliver to all subscribers of the topic mentioned by the 
 
 #### Recreate api
 
+Required plugin
+
+```
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc
+```
+
+Create
+
 ```
 protoc --go_out=. --go_opt=paths=source_relative --go-grpc_out=. --go-grpc_opt=paths=source_relative api/api.proto
 ```
