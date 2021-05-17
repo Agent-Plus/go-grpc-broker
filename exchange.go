@@ -28,8 +28,11 @@ var (
 	// ErrUknonwChannel is raised on attempt to retreive uknown channel by token identifier from registry
 	ErrUknonwChannel = errors.New("uknown channel")
 
+	// ErrUknonwToken is raised metadata does not contain required token
+	ErrUknonwToken = errors.New("uknown token")
+
 	// ErrUknonwTopic is raised on attempt to retreive uknown topic
-	ErrUknonwTopic = errors.New("uknown topic")
+	ErrUnknonwTopic = errors.New("unknown topic")
 
 	// ErrWaitTimeout is raised on attempt to push to the blocked channel
 	ErrWaitTimeout = errors.New("wait timeout")
@@ -84,7 +87,7 @@ func (ex *Exchange) NewChannel() *Channel {
 func (ex *Exchange) send(ctx context.Context, pb *publisher) error {
 	tp := ex.topic(pb.topic)
 	if tp == nil {
-		return ErrUknonwTopic
+		return ErrUnknonwTopic
 	}
 
 	if tp.exclusive {
