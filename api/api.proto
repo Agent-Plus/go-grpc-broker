@@ -26,19 +26,17 @@ message Message {
 }
 
 message PublishRequest {
-    Token token = 1;
-    string topic = 2;
-    Message message = 3;
+    string topic = 1;
+    Message message = 2;
 }
 
 message PublishResponse {}
 
 // Subscription represents 
 message SubscribeRequest {
-    Token token = 1;
-    string name = 2;
-    string tag = 3;
-    bool exclusive = 4;
+    string name = 1;
+    string tag = 2;
+    bool exclusive = 3;
 }
 
 message SubscribeResponse {}
