@@ -147,10 +147,9 @@ func TestSubscribe(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Log(tk)
+	ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+tk.Key)
 	_, err = client.Subscribe(ctx, &api.SubscribeRequest{
-		Token: tk,
-		Name:  "foo",
+		Name: "foo",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -176,10 +175,9 @@ func TestConsume(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	t.Log(tk)
+	ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+tk.Key)
 	_, err = client.Subscribe(ctx, &api.SubscribeRequest{
-		Token: tk,
-		Name:  "foo",
+		Name: "foo",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -191,7 +189,6 @@ func TestConsume(t *testing.T) {
 		wg     sync.WaitGroup
 	)
 
-	ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+tk.Key)
 	stream, err = client.Consume(ctx, &empty.Empty{})
 	if err != nil {
 		t.Fatal(err)
@@ -254,8 +251,8 @@ func TestRPCDialog(t *testing.T) {
 	}
 	defer cla.conn.Close()
 
+	cla.ctx = metadata.AppendToOutgoingContext(cla.ctx, "authorization", "Bearer "+cla.tk.Key)
 	_, err = cla.ch.Subscribe(cla.ctx, &api.SubscribeRequest{
-		Token:     cla.tk,
 		Name:      "foo-rpc",
 		Exclusive: true,
 	})
@@ -271,8 +268,8 @@ func TestRPCDialog(t *testing.T) {
 	}
 	defer clb.conn.Close()
 
+	clb.ctx = metadata.AppendToOutgoingContext(clb.ctx, "authorization", "Bearer "+clb.tk.Key)
 	_, err = clb.ch.Subscribe(clb.ctx, &api.SubscribeRequest{
-		Token:     clb.tk,
 		Name:      "foo-rpc",
 		Exclusive: true,
 	})
@@ -311,7 +308,6 @@ func TestRPCDialog(t *testing.T) {
 		for i := 0; i < 3; i++ {
 			id := uuid.NewV4()
 			_, err = cl.ch.Publish(cl.ctx, &api.PublishRequest{
-				Token: cl.tk,
 				Topic: "foo-rpc",
 				Message: &api.Message{
 					Body: []byte("ping"),
@@ -335,7 +331,6 @@ func TestRPCDialog(t *testing.T) {
 
 			if string(msg.Body) == "ping" {
 				_, err = cl.ch.Publish(cl.ctx, &api.PublishRequest{
-					Token: cl.tk,
 					Topic: "foo-rpc",
 					Message: &api.Message{
 						Body: []byte("pong"),
