@@ -123,12 +123,8 @@ func (m *ExchangeServer) Consume(_ *empty.Empty, stream api.Exchange_ConsumeServ
 
 // Publish implements api.ExchangeServer interface to send message to the topic.
 func (m *ExchangeServer) Publish(ctx context.Context, pb *api.PublishRequest) (*api.PublishResponse, error) {
-	tk := pb.Token
-	if tk == nil {
-		return nil, errors.New("uknown token")
-	}
-
-	ch, err := m.Channel(tk.Key)
+	tk := tkFromHeader(ctx)
+	ch, err := m.Channel(tk)
 	if err != nil {
 		return nil, err
 	}
@@ -148,12 +144,12 @@ func (m *ExchangeServer) Publish(ctx context.Context, pb *api.PublishRequest) (*
 
 // Subscribe implements api.ExchangeServer interface to subscribe client to the topic
 func (m *ExchangeServer) Subscribe(ctx context.Context, sb *api.SubscribeRequest) (*api.SubscribeResponse, error) {
-	tk := sb.Token
-	if tk == nil {
-		return nil, errors.New("uknown token")
+	tk := tkFromHeader(ctx)
+	if len(tk) == 0 {
+		return nil, status.Error(codes.Unauthenticated, ErrUknonwToken.Error())
 	}
 
-	ch, err := m.Channel(tk.Key)
+	ch, err := m.Channel(tk)
 	if err != nil {
 		return nil, err
 	}
@@ -168,14 +164,18 @@ func (m *ExchangeServer) Subscribe(ctx context.Context, sb *api.SubscribeRequest
 
 // Run starts networking
 func (s *ExchangeServer) Run(address string) (err error) {
-	var ls net.Listener
+	var lis net.Listener
 
-	ls, err = net.Listen("tcp", address)
+	lis, err = net.Listen("tcp", address)
 	if err != nil {
 		return
 	}
 
-	err = s.gs.Serve(ls)
+	err = s.Serve(lis)
 
 	return
+}
+
+func (s *ExchangeServer) Serve(lis net.Listener) error {
+	return s.gs.Serve(lis)
 }
