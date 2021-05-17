@@ -36,7 +36,6 @@ func (tp *topic) send(ctx context.Context, pb *publisher) error {
 	}
 
 	for _, ch := range tp.channels.registry {
-		//fmt.Println(ch.token.String())
 		// skip self receiver
 		if uuid.Equal(ch.token, pb.channel.token) {
 			continue
