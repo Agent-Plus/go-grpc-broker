@@ -7,7 +7,9 @@ import (
 	"github.com/Agent-Plus/go-grpc-broker/api"
 	"github.com/golang/protobuf/ptypes/empty"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 type ExchangeClient struct {
@@ -38,12 +40,16 @@ func (ec *ExchangeClient) metadata() context.Context {
 }
 
 func (ec *ExchangeClient) Authenticate(name, secret string) error {
-	tk, err := ec.api.Authenticate(context.Background(), &api.Identity{Id: name, Secret: secret})
-	if err != nil {
-		return err
+	// check token value, prefilled value means authenticated otherwise try to send Authenticate request
+	if len(ec.token) == 0 {
+		tk, err := ec.api.Authenticate(context.Background(), &api.Identity{Id: name, Secret: secret})
+		if err != nil {
+			return err
+		}
+
+		ec.token = tk.Key
 	}
 
-	ec.token = tk.Key
 	return nil
 }
 
@@ -55,6 +61,7 @@ func (ec *ExchangeClient) Subscribe(name string, exc bool) error {
 		Exclusive: exc,
 	})
 	if err != nil {
+		ec.onError(err)
 		return err
 	}
 
@@ -79,6 +86,7 @@ func (ec *ExchangeClient) Consume() (<-chan *Message, error) {
 	ctx := ec.metadata()
 	stream, err := ec.api.Consume(ctx, &empty.Empty{})
 	if err != nil {
+		ec.onError(err)
 		return nil, err
 	}
 
@@ -165,8 +173,19 @@ func (ec *ExchangeClient) Publish(topic string, msg Message) error {
 		Message: m,
 	})
 	if err != nil {
+		ec.onError(err)
 		return err
 	}
 
 	return nil
+}
+
+func (ec *ExchangeClient) onError(err error) {
+	if e, ok := status.FromError(err); ok {
+		switch e.Code() {
+		// drop down known token value on Unauthenticated server response
+		case codes.Unauthenticated:
+			ec.token = ""
+		}
+	}
 }
