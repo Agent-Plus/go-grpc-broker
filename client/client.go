@@ -2,6 +2,8 @@ package client
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/Agent-Plus/go-grpc-broker/api"
@@ -10,6 +12,11 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
+)
+
+var (
+	ErrServerUnavailable = errors.New("server unavailable")
+	ErrUnauthenticated   = errors.New("unauthenticated")
 )
 
 type ExchangeClient struct {
@@ -44,7 +51,7 @@ func (ec *ExchangeClient) Authenticate(name, secret string) error {
 	if len(ec.token) == 0 {
 		tk, err := ec.api.Authenticate(context.Background(), &api.Identity{Id: name, Secret: secret})
 		if err != nil {
-			return err
+			return ec.onError(err)
 		}
 
 		ec.token = tk.Key
@@ -61,8 +68,7 @@ func (ec *ExchangeClient) Subscribe(name string, exc bool) error {
 		Exclusive: exc,
 	})
 	if err != nil {
-		ec.onError(err)
-		return err
+		return ec.onError(err)
 	}
 
 	ec.subscribed = name
@@ -86,8 +92,7 @@ func (ec *ExchangeClient) Consume() (<-chan *Message, error) {
 	ctx := ec.metadata()
 	stream, err := ec.api.Consume(ctx, &empty.Empty{})
 	if err != nil {
-		ec.onError(err)
-		return nil, err
+		return nil, ec.onError(err)
 	}
 
 	if header, err := stream.Header(); err != nil {
@@ -173,19 +178,25 @@ func (ec *ExchangeClient) Publish(topic string, msg Message) error {
 		Message: m,
 	})
 	if err != nil {
-		ec.onError(err)
-		return err
+		return ec.onError(err)
 	}
 
 	return nil
 }
 
-func (ec *ExchangeClient) onError(err error) {
+func (ec *ExchangeClient) onError(err error) error {
 	if e, ok := status.FromError(err); ok {
 		switch e.Code() {
-		// drop down known token value on Unauthenticated server response
 		case codes.Unauthenticated:
+			// drop down known token value on Unauthenticated server response
 			ec.token = ""
+
+			err = fmt.Errorf("%v: %w", err, ErrUnauthenticated)
+
+		case codes.Unavailable:
+			err = fmt.Errorf("%v: %w", err, ErrServerUnavailable)
 		}
 	}
+
+	return err
 }
