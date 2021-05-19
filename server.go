@@ -93,9 +93,13 @@ func tkFromHeader(ctx context.Context) string {
 // the topic which client was subscribed earlier.
 func (m *ExchangeServer) Consume(_ *empty.Empty, stream api.Exchange_ConsumeServer) error {
 	tk := tkFromHeader(stream.Context())
+	if len(tk) == 0 {
+		return status.Error(codes.Unauthenticated, ErrUknonwToken.Error())
+	}
+
 	ch, err := m.Channel(tk)
 	if err != nil {
-		return err
+		return status.Error(codes.Unauthenticated, err.Error())
 	}
 
 	queue := ch.Consume()
@@ -124,9 +128,13 @@ func (m *ExchangeServer) Consume(_ *empty.Empty, stream api.Exchange_ConsumeServ
 // Publish implements api.ExchangeServer interface to send message to the topic.
 func (m *ExchangeServer) Publish(ctx context.Context, pb *api.PublishRequest) (*api.PublishResponse, error) {
 	tk := tkFromHeader(ctx)
+	if len(tk) == 0 {
+		return nil, status.Error(codes.Unauthenticated, ErrUknonwToken.Error())
+	}
+
 	ch, err := m.Channel(tk)
 	if err != nil {
-		return nil, err
+		return nil, status.Error(codes.Unauthenticated, err.Error())
 	}
 
 	_, err = ch.Publish(pb.Topic, pb.Message)
@@ -151,7 +159,7 @@ func (m *ExchangeServer) Subscribe(ctx context.Context, sb *api.SubscribeRequest
 
 	ch, err := m.Channel(tk)
 	if err != nil {
-		return nil, err
+		return nil, status.Error(codes.Unauthenticated, err.Error())
 	}
 
 	err = ch.Subscribe(sb.Name, sb.Tag, sb.Exclusive)
