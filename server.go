@@ -112,10 +112,7 @@ func (m *ExchangeServer) Consume(_ *empty.Empty, stream api.Exchange_ConsumeServ
 	}
 
 	for msg := range queue {
-		err = stream.Send(&api.Message{
-			Body: msg.Body,
-			Id:   msg.Id,
-		})
+		err = stream.Send(msg)
 
 		if err != nil {
 			break
