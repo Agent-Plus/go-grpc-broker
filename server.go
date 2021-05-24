@@ -8,11 +8,21 @@ import (
 
 	"github.com/Agent-Plus/go-grpc-broker/api"
 	"github.com/golang/protobuf/ptypes/empty"
+	uuid "github.com/satori/go.uuid"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
+)
+
+// contextKey type is unexported to prevent collisions with context keys defined in other packages
+type contextKey int
+
+const (
+	// connIdCtxKey is connection tag key
+	connIdCtxKey contextKey = iota
 )
 
 // Authenticator describes credentials validator
@@ -45,13 +55,42 @@ type ExchangeServer struct {
 	gs   *grpc.Server
 }
 
+type connStats struct {
+	*Exchange
+}
+
+func (h *connStats) TagConn(ctx context.Context, info *stats.ConnTagInfo) context.Context {
+	return context.WithValue(ctx, connIdCtxKey, uuid.NewV4())
+}
+
+func (h *connStats) TagRPC(ctx context.Context, info *stats.RPCTagInfo) context.Context {
+	return ctx
+}
+
+func (h *connStats) HandleConn(ctx context.Context, s stats.ConnStats) {
+	switch s.(type) {
+	case *stats.ConnEnd:
+		if id, ok := ctx.Value(connIdCtxKey).(uuid.UUID); ok {
+			h.CloseChannel(id)
+		}
+		break
+	}
+}
+
+func (h *connStats) HandleRPC(ctx context.Context, s stats.RPCStats) {}
+
 // NewExchangeServer creates new Exchange Server with given authenticator and additional options for the grpc.Server.
 func NewExchangeServer(auth Authenticator, opt ...grpc.ServerOption) (s *ExchangeServer) {
 	s = &ExchangeServer{
 		auth:     auth,
 		Exchange: New(),
 	}
-	gs := grpc.NewServer(opt...)
+
+	opts := make([]grpc.ServerOption, 1, len(opt)+1)
+	opts[0] = grpc.StatsHandler(&connStats{s.Exchange})
+	opts = append(opts, opt...)
+
+	gs := grpc.NewServer(opts...)
 	api.RegisterExchangeServer(gs, s)
 
 	s.gs = gs
@@ -68,8 +107,11 @@ func (s *ExchangeServer) Authenticate(ctx context.Context, identity *api.Identit
 		return nil, err
 	}
 
-	ch := s.NewChannel()
+	ch := NewChannel()
+	ch.token, _ = ctx.Value(connIdCtxKey).(uuid.UUID)
 	ch.cid = identity.Id
+
+	s.AddChannel(ch)
 
 	return &api.Token{
 		Key: ch.Token(),

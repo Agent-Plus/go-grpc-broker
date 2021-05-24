@@ -38,7 +38,6 @@ type Channel struct {
 func NewChannel() *Channel {
 	return &Channel{
 		optTTL: 10 * time.Second,
-		token:  uuid.NewV4(),
 	}
 }
 
@@ -51,22 +50,6 @@ func (ch *Channel) Consume() <-chan *api.Message {
 	ch.mutex.Unlock()
 
 	return ch.pull
-}
-
-// Close distructs channel
-func (ch *Channel) Close() {
-	ch.mutex.Lock()
-	ch.pulling = false
-	ch.mutex.Unlock()
-
-	// TODO: unsibscribe
-
-	ch.mutex.Lock()
-	defer ch.mutex.Unlock()
-
-	ch.ex = nil
-
-	close(ch.pull)
 }
 
 type publisher struct {
@@ -137,7 +120,9 @@ func (ch *Channel) send(ctx context.Context, msg *api.Message, tm <-chan time.Ti
 // but does not remove subscription.
 func (ch *Channel) StopConsume() {
 	ch.mutex.Lock()
-	close(ch.pull)
+	if ch.pulling {
+		close(ch.pull)
+	}
 	ch.pulling = false
 	ch.mutex.Unlock()
 }

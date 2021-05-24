@@ -219,7 +219,8 @@ func TestConsume(t *testing.T) {
 		}
 	}()
 
-	pub := sr.NewChannel()
+	pub := NewChannel()
+	sr.AddChannel(pub)
 
 	go func() {
 		for i := 1; i < 6; i++ {

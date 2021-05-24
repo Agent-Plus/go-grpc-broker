@@ -125,13 +125,3 @@ func (s *subscriptions) subscribe(ch *Channel, name string, exc bool) error {
 
 	return nil
 }
-
-func (s *subscriptions) unsubscribe(id uuid.UUID, name string) {
-	tp := s.topic(name)
-
-	tp.channels.Lock()
-	if ch := tp.channels.remove(id); ch != nil {
-		ch.StopConsume()
-	}
-	tp.channels.Unlock()
-}

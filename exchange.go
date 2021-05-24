@@ -72,16 +72,47 @@ func (ex *Exchange) Channel(tk string) (*Channel, error) {
 	return ch, nil
 }
 
-// NewChannel creates new Channel in the exchange scope
-func (ex *Exchange) NewChannel() *Channel {
-	ch := NewChannel()
+// AddChannel appends given Channel to the exchange scope
+func (ex *Exchange) AddChannel(ch *Channel) {
+	if uuid.Equal(ch.token, uuid.UUID{}) {
+		ch.token = uuid.NewV4()
+	}
 	ch.ex = ex
 
 	ex.channels.Lock()
 	ex.channels.add(ch)
 	ex.channels.Unlock()
+}
 
-	return ch
+func (ex *Exchange) CloseChannel(id uuid.UUID) {
+	if uuid.Equal(id, uuid.UUID{}) {
+		return
+	}
+
+	ex.channels.Lock()
+	ch := ex.channels.channel(id)
+	ex.channels.Unlock()
+
+	if ch == nil {
+		return
+	}
+
+	// stop listening
+	ch.StopConsume()
+
+	// remove all subscriptions
+	ex.subscriptions.Lock()
+	for _, tp := range ex.subscriptions.subsr {
+		tp.channels.remove(id)
+	}
+	ex.subscriptions.Unlock()
+
+	// remove from registry
+	ex.channels.Lock()
+	ex.channels.remove(ch)
+	ex.channels.Unlock()
+	// clear exchange pointer
+	ch.ex = nil
 }
 
 func (ex *Exchange) send(ctx context.Context, pb *publisher) error {

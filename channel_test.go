@@ -26,7 +26,8 @@ func TestFanoutMessages(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		// tie from exchange channel
-		ch := ex.NewChannel()
+		ch := NewChannel()
+		ex.AddChannel(ch)
 
 		// subscribe receiver
 		ch.Subscribe("foo", "", false)
@@ -48,7 +49,8 @@ func TestFanoutMessages(t *testing.T) {
 	}
 
 	// tie from exchange channel
-	pub := ex.NewChannel()
+	pub := NewChannel()
+	ex.AddChannel(pub)
 
 	_, err := pub.Publish("foo", &api.Message{})
 	if err != nil {
@@ -73,7 +75,8 @@ func TestFanoutCircuitNonBreaking(t *testing.T) {
 	for i := 0; i < 11; i++ {
 		wg.Add(1)
 		go func(i int) {
-			ch := ex.NewChannel()
+			ch := NewChannel()
+			ex.AddChannel(ch)
 			defer ch.StopConsume()
 
 			// subscribe receiver
@@ -98,7 +101,8 @@ func TestFanoutCircuitNonBreaking(t *testing.T) {
 
 	wg.Wait()
 
-	pb := ex.NewChannel()
+	pb := NewChannel()
+	ex.AddChannel(pb)
 
 	for i := 0; i < 10; i++ {
 		ack, err := pb.Publish("foo", &api.Message{})
@@ -133,7 +137,8 @@ func TestRPCSubscriptionLimit(t *testing.T) {
 	ex := New()
 
 	// channel A
-	cha := ex.NewChannel()
+	cha := NewChannel()
+	ex.AddChannel(cha)
 
 	// declasre exclusive
 	if err := cha.Subscribe("foo", "", true); err != nil {
@@ -141,14 +146,16 @@ func TestRPCSubscriptionLimit(t *testing.T) {
 	}
 
 	// channel B
-	chb := ex.NewChannel()
+	chb := NewChannel()
+	ex.AddChannel(chb)
 	// declare exclusive
 	if err := chb.Subscribe("foo", "", true); err != nil {
 		t.Error(err)
 	}
 
 	// one more
-	chc := ex.NewChannel()
+	chc := NewChannel()
+	ex.AddChannel(chc)
 	// declare exclusive
 	err := chc.Subscribe("foo", "", true)
 
@@ -162,7 +169,8 @@ func TestRPCNotpullingConsumers(t *testing.T) {
 	ex := New()
 
 	// channel A
-	cha := ex.NewChannel()
+	cha := NewChannel()
+	ex.AddChannel(cha)
 
 	// declasre exclusive
 	if err := cha.Subscribe("foo", "", true); err != nil {
@@ -170,7 +178,8 @@ func TestRPCNotpullingConsumers(t *testing.T) {
 	}
 
 	// channel B
-	chb := ex.NewChannel()
+	chb := NewChannel()
+	ex.AddChannel(chb)
 	_, err := chb.Publish("foo", &api.Message{})
 
 	if err != ErrNotSubscribedExclusive {
@@ -183,7 +192,8 @@ func TestRPCWithWaitTimeoutError(t *testing.T) {
 	ex := New()
 
 	// channel A
-	cha := ex.NewChannel()
+	cha := NewChannel()
+	ex.AddChannel(cha)
 	// declasre exclusive
 	if err := cha.Subscribe("foo", "", true); err != nil {
 		t.Error(err)
@@ -213,7 +223,8 @@ func TestRPCWithWaitTimeoutError(t *testing.T) {
 	}(cha, cha.Consume())
 
 	// channel B
-	chb := ex.NewChannel()
+	chb := NewChannel()
+	ex.AddChannel(chb)
 	_, err := chb.Publish("foo", &api.Message{})
 	wg.Wait()
 
@@ -229,7 +240,8 @@ func TestRPCUnsubscribedPublishError(t *testing.T) {
 	ex := New()
 
 	// channel A
-	cha := ex.NewChannel()
+	cha := NewChannel()
+	ex.AddChannel(cha)
 
 	// declare exclusive
 	if err := cha.Subscribe("foo", "", true); err != nil {
@@ -239,7 +251,8 @@ func TestRPCUnsubscribedPublishError(t *testing.T) {
 	go func(m <-chan *api.Message) {}(cha.Consume())
 
 	// channel B
-	chb := ex.NewChannel()
+	chb := NewChannel()
+	ex.AddChannel(chb)
 	// publish without subscription
 	_, err := chb.Publish("foo", &api.Message{})
 
@@ -256,7 +269,8 @@ func BenchmarkFanout_1000ch(b *testing.B) {
 	for i := 0; i < 1000; i++ {
 		wg.Add(1)
 		go func(i int) {
-			ch := ex.NewChannel()
+			ch := NewChannel()
+			ex.AddChannel(ch)
 
 			// declare exclusive
 			if err := ch.Subscribe("foo-bench", "", false); err != nil {
@@ -274,7 +288,8 @@ func BenchmarkFanout_1000ch(b *testing.B) {
 
 	wg.Wait()
 
-	pb := ex.NewChannel()
+	pb := NewChannel()
+	ex.AddChannel(pb)
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
