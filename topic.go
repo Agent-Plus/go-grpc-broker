@@ -41,6 +41,10 @@ func (tp *topic) send(ctx context.Context, pb *publisher) error {
 			continue
 		}
 
+		if len(pb.tags) > 0 && !ch.isTag(pb.tags) {
+			continue
+		}
+
 		tm.Reset(tp.ttl)
 		err := ch.send(ctx, pb.request, tm.C)
 		tm.Stop()

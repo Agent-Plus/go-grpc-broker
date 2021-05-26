@@ -176,7 +176,7 @@ func (m *ExchangeServer) Publish(ctx context.Context, pb *api.PublishRequest) (*
 		return nil, status.Error(codes.Unauthenticated, err.Error())
 	}
 
-	_, err = ch.Publish(pb.Topic, pb.Message)
+	_, err = ch.Publish(pb.Topic, pb.Message, pb.Tag)
 	if err != nil {
 		if _, ok := err.(*CircuitErrors); ok {
 			// TODO; Dump these errors to debug

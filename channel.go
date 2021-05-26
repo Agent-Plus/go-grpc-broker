@@ -30,6 +30,9 @@ type Channel struct {
 	// channel is pulling at the moment
 	pulling bool
 
+	// tag
+	tag string
+
 	// authorization token and identifier of the channel
 	token uuid.UUID
 }
@@ -62,12 +65,15 @@ type publisher struct {
 	// message
 	request *api.Message
 
+	// tags
+	tags []string
+
 	// topic name
 	topic string
 }
 
 // Publish sends given message to the given topic
-func (ch *Channel) Publish(name string, msg *api.Message) (int, error) {
+func (ch *Channel) Publish(name string, msg *api.Message, tags []string) (int, error) {
 	// set daedline for the whole operation
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -76,6 +82,7 @@ func (ch *Channel) Publish(name string, msg *api.Message) (int, error) {
 		pb := &publisher{
 			channel: ch,
 			request: msg,
+			tags:    tags,
 			topic:   name,
 		}
 		err := ch.ex.send(ctx, pb)
@@ -139,13 +146,36 @@ func (ch *Channel) Subscribe(name, tag string, exc bool) error {
 		return ErrSubscribeStandAloneChannel
 	}
 
-	// TODO: must cache tag
+	err := ch.ex.subscribe(ch, name, exc)
+	if err != nil {
+		return nil
+	}
 
-	return ch.ex.subscribe(ch, name, exc)
+	if len(tag) > 0 {
+		ch.mutex.Lock()
+		ch.tag = tag
+		ch.mutex.Unlock()
+	}
+
+	return nil
 }
 
 func (ch *Channel) Token() string {
 	return ch.token.String()
+}
+
+func (ch *Channel) isTag(tags []string) bool {
+	if len(tags) > 0 && len(ch.tag) == 0 {
+		return false
+	}
+
+	for _, tg := range tags {
+		if tg == ch.tag {
+			return true
+		}
+	}
+
+	return false
 }
 
 // kvStore represents key-value store of the channels with manager to control race.

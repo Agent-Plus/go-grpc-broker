@@ -27,7 +27,8 @@ message Message {
 
 message PublishRequest {
     string topic = 1;
-    Message message = 2;
+    repeated string tag = 2;
+    Message message = 3;
 }
 
 message PublishResponse {}
