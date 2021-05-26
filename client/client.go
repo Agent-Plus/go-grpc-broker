@@ -20,23 +20,38 @@ var (
 )
 
 type ExchangeClient struct {
-	address    string
-	api        api.ExchangeClient
-	consumers  []streamWorker
+	api api.ExchangeClient
+
+	// server address
+	address string
+
+	// authentication credentials
+	// application identifier
+	id string
+	// authentication secret
+	secret string
+
+	// client is subscribed
 	subscribed string
-	token      string
+
+	// connection id
+	token string
 }
 
-func New(addr string) (*ExchangeClient, error) {
+func New() *ExchangeClient {
+	return &ExchangeClient{}
+}
+
+func (ec *ExchangeClient) Dial(addr string) error {
 	conn, err := grpc.Dial(addr, grpc.WithInsecure())
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	return &ExchangeClient{
-		address: addr,
-		api:     api.NewExchangeClient(conn),
-	}, nil
+	ec.address = addr
+	ec.api = api.NewExchangeClient(conn)
+
+	return nil
 }
 
 func (ec *ExchangeClient) metadata() context.Context {
@@ -60,11 +75,11 @@ func (ec *ExchangeClient) Authenticate(name, secret string) error {
 	return nil
 }
 
-func (ec *ExchangeClient) Subscribe(name string, exc bool) error {
+func (ec *ExchangeClient) Subscribe(name, tag string, exc bool) error {
 	ctx := ec.metadata()
 	_, err := ec.api.Subscribe(ctx, &api.SubscribeRequest{
 		Name:      name,
-		Tag:       "",
+		Tag:       tag,
 		Exclusive: exc,
 	})
 	if err != nil {
@@ -122,7 +137,8 @@ func readStrem(stream api.Exchange_ConsumeClient, worker *streamWorker) {
 		default:
 			msg, err := stream.Recv()
 			if err != nil {
-				panic(err)
+				close(worker.deliver)
+				return
 			}
 
 			m := &Message{
@@ -150,7 +166,7 @@ func readStrem(stream api.Exchange_ConsumeClient, worker *streamWorker) {
 	}
 }
 
-func (ec *ExchangeClient) Publish(topic string, msg Message) error {
+func (ec *ExchangeClient) Publish(topic string, msg Message, tags []string) error {
 	ctx := ec.metadata()
 
 	m := &api.Message{
@@ -175,6 +191,7 @@ func (ec *ExchangeClient) Publish(topic string, msg Message) error {
 
 	_, err := ec.api.Publish(ctx, &api.PublishRequest{
 		Topic:   topic,
+		Tag:     tags,
 		Message: m,
 	})
 	if err != nil {
