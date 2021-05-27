@@ -116,8 +116,10 @@ func (s *subscriptions) subscribe(ch *Channel, name string, exc bool) error {
 		ln := tp.channels.len()
 		tp.channels.Unlock()
 
-		if ln == 2 {
-			return ErrSubscribeRPCFull
+		if ln < 2 {
+			// ok
+		} else {
+			return ErrSubscribeExclusiveFull
 		}
 	}
 

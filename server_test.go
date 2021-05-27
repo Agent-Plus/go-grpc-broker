@@ -226,7 +226,7 @@ func TestConsume(t *testing.T) {
 		for i := 1; i < 6; i++ {
 			_, err := pub.Publish("foo", &api.Message{
 				Body: []byte(strconv.Itoa(i)),
-			})
+			}, nil)
 			if err != nil {
 				if _, ok := err.(*CircuitErrors); ok {
 					t.Log("WARN:", err)

@@ -176,7 +176,8 @@ func (m *ExchangeServer) Publish(ctx context.Context, pb *api.PublishRequest) (*
 		return nil, status.Error(codes.Unauthenticated, err.Error())
 	}
 
-	_, err = ch.Publish(pb.Topic, pb.Message, pb.Tag)
+	var ack int
+	ack, err = ch.Publish(pb.Topic, pb.Message, pb.Tag)
 	if err != nil {
 		if _, ok := err.(*CircuitErrors); ok {
 			// TODO; Dump these errors to debug
@@ -186,7 +187,9 @@ func (m *ExchangeServer) Publish(ctx context.Context, pb *api.PublishRequest) (*
 		}
 	}
 
-	return &api.PublishResponse{}, nil
+	return &api.PublishResponse{
+		Ack: int32(ack),
+	}, nil
 }
 
 // Subscribe implements api.ExchangeServer interface to subscribe client to the topic

@@ -20,7 +20,10 @@ var (
 	ErrNotSubscribedExclusive = errors.New("not subscribed to exclusive")
 
 	// ErrSubscribeRPCFull is raised to reject more than two subscriptions to the exclusive channel
-	ErrSubscribeRPCFull = errors.New("exclusive topic is full")
+	ErrSubscribeExclusiveFull = errors.New("exclusive topic is full")
+
+	// ErrPublishExclusiveNotConsumed is raised on `Publish` to exclusive topic where topic hasn't receiver
+	ErrPublishExclusiveNotConsumed = errors.New("exclusive topic not consumed")
 
 	// ErrSubscribeStandAloneChannel rejects `Subscribe` action for the channel which is not in the `Exchange` scope.
 	ErrSubscribeStandAloneChannel = errors.New("cannot subscribe stand alone channel")
@@ -130,6 +133,10 @@ func (ex *Exchange) send(ctx context.Context, pb *publisher) error {
 	tp.channels.Lock()
 	err := tp.send(ctx, pb)
 	tp.channels.Unlock()
+
+	if err == nil && tp.exclusive && pb.ack == 0 {
+		err = ErrPublishExclusiveNotConsumed
+	}
 
 	return err
 }
