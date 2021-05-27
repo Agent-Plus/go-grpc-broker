@@ -31,7 +31,9 @@ message PublishRequest {
     Message message = 3;
 }
 
-message PublishResponse {}
+message PublishResponse {
+    int32 ack = 1;
+}
 
 // Subscription represents 
 message SubscribeRequest {
