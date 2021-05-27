@@ -52,7 +52,7 @@ func TestFanoutMessages(t *testing.T) {
 	pub := NewChannel()
 	ex.AddChannel(pub)
 
-	_, err := pub.Publish("foo", &api.Message{})
+	_, err := pub.Publish("foo", &api.Message{}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,7 +105,7 @@ func TestFanoutCircuitNonBreaking(t *testing.T) {
 	ex.AddChannel(pb)
 
 	for i := 0; i < 10; i++ {
-		ack, err := pb.Publish("foo", &api.Message{})
+		ack, err := pb.Publish("foo", &api.Message{}, nil)
 
 		if err != nil {
 			if er, ok := err.(*CircuitErrors); ok {
@@ -131,15 +131,13 @@ func TestFanoutCircuitNonBreaking(t *testing.T) {
 	}
 }
 
-// нужно протестировать rpc подписку, не более 2-х
-func TestRPCSubscriptionLimit(t *testing.T) {
+func TestExclusiveSubscriptionLimit(t *testing.T) {
 	// instatinate exchange
 	ex := New()
 
 	// channel A
 	cha := NewChannel()
 	ex.AddChannel(cha)
-
 	// declasre exclusive
 	if err := cha.Subscribe("foo", "", true); err != nil {
 		t.Error(err)
@@ -159,8 +157,8 @@ func TestRPCSubscriptionLimit(t *testing.T) {
 	// declare exclusive
 	err := chc.Subscribe("foo", "", true)
 
-	if err != ErrSubscribeRPCFull {
-		t.Error("expected error:", ErrSubscribeRPCFull)
+	if err != ErrSubscribeExclusiveFull {
+		t.Error("expected error:", ErrSubscribeExclusiveFull, ", got:", err)
 	}
 }
 
@@ -180,7 +178,7 @@ func TestRPCNotpullingConsumers(t *testing.T) {
 	// channel B
 	chb := NewChannel()
 	ex.AddChannel(chb)
-	_, err := chb.Publish("foo", &api.Message{})
+	_, err := chb.Publish("foo", &api.Message{}, nil)
 
 	if err != ErrNotSubscribedExclusive {
 		t.Errorf("expected error: %v, but got: %v", ErrNotSubscribedExclusive, err)
@@ -225,7 +223,7 @@ func TestRPCWithWaitTimeoutError(t *testing.T) {
 	// channel B
 	chb := NewChannel()
 	ex.AddChannel(chb)
-	_, err := chb.Publish("foo", &api.Message{})
+	_, err := chb.Publish("foo", &api.Message{}, nil)
 	wg.Wait()
 
 	if err != ErrNotSubscribedExclusive {
@@ -254,7 +252,7 @@ func TestRPCUnsubscribedPublishError(t *testing.T) {
 	chb := NewChannel()
 	ex.AddChannel(chb)
 	// publish without subscription
-	_, err := chb.Publish("foo", &api.Message{})
+	_, err := chb.Publish("foo", &api.Message{}, nil)
 
 	if err != ErrNotSubscribedExclusive {
 		t.Error("expected error: ", ErrNotSubscribedExclusive)
@@ -293,7 +291,7 @@ func BenchmarkFanout_1000ch(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := pb.Publish("foo-bench", &api.Message{})
+		_, err := pb.Publish("foo-bench", &api.Message{}, nil)
 		b.StopTimer()
 		if err != nil {
 			if _, ok := err.(*CircuitErrors); ok {

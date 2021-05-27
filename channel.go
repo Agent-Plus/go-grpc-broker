@@ -148,7 +148,7 @@ func (ch *Channel) Subscribe(name, tag string, exc bool) error {
 
 	err := ch.ex.subscribe(ch, name, exc)
 	if err != nil {
-		return nil
+		return err
 	}
 
 	if len(tag) > 0 {
