@@ -12,13 +12,15 @@ const (
 
 	// headerResource is name of the header to store resource
 	headerResource = "rpc-resource"
+
+	headerResponse = "rpc-response-corid"
 )
 
 // ActionType is action type
 type ActionType uint8
 
 const (
-	_ ActionType = iota
+	actionNoop ActionType = iota
 
 	// ActionCreate requires to create resource
 	ActionCreate
@@ -42,14 +44,14 @@ var (
 )
 
 // HandlerFunc represents function to proccess with incoming message
-type HandlerFunc func(*Message)
+type HandlerFunc func(ResponseWriter, *Message)
 
-func (hf HandlerFunc) ServeMessage(m *Message) {
-	hf(m)
+func (hf HandlerFunc) ServeMessage(w ResponseWriter, m *Message) {
+	hf(w, m)
 }
 
 type Handler interface {
-	ServeMessage(*Message)
+	ServeMessage(ResponseWriter, *Message)
 }
 
 // Middleware is function type to return Handler
@@ -58,9 +60,13 @@ type Middleware func(Handler) Handler
 type ServeMux struct {
 	*ExchangeClient
 
-	reconn chan int8
+	reconn  chan int8
+	serving atomicBool
 
-	trees           map[ActionType]*node
+	daedline time.Time
+	trees    map[ActionType]*node
+	waitRPC  *rpcRegistry
+
 	NotFoundHandler Handler
 	PanicHandler    func(*Message, interface{})
 }
@@ -81,6 +87,10 @@ type SubOption struct {
 func NewServeMux(client *ExchangeClient) *ServeMux {
 	return &ServeMux{
 		ExchangeClient: client,
+		daedline:       time.Now().Add(10 * time.Second),
+		waitRPC: &rpcRegistry{
+			resps: make(map[string]*rpcResponse),
+		},
 	}
 }
 
@@ -117,44 +127,79 @@ func (m *ServeMux) Delete(resource string, handle HandlerFunc, md ...Middleware)
 	m.Handle(ActionDelete, resource, wrapMiddlewares(handle, md))
 }
 
+// Get registers given resource name and handler function on action type ActionGet
+func (m *ServeMux) Get(resource string, handle HandlerFunc, md ...Middleware) {
+	m.Handle(ActionGet, resource, wrapMiddlewares(handle, md))
+}
+
 // Update registers given resource name and handler function on action type ActionCreate
 func (m *ServeMux) Update(resource string, handle HandlerFunc, md ...Middleware) {
 	m.Handle(ActionUpdate, resource, wrapMiddlewares(handle, md))
 }
 
 // ServeMessage routes given Message to the handler function according toe the Message.Action and Message.Resource.
-func (m *ServeMux) ServeMessage(msg *Message) {
+func (m *ServeMux) ServeMessage(w ResponseWriter, msg *Message) {
 	if m.PanicHandler != nil {
 		defer m.recv(msg)
 	}
 
 	action, _ := msg.Headers.GetInt64(headerAction)
 	resource := msg.Headers.GetString(headerResource)
+	corid := msg.Headers.GetString(headerResponse)
 
-	if n, ok := m.trees[ActionType(action)]; ok {
-		leaf := n.children[resource]
-		if leaf != nil {
-			leaf.handle.ServeMessage(msg)
-			return
+	if ActionType(action) == actionNoop {
+		if len(corid) > 0 {
+			if resp := m.waitRPC.get(corid); resp != nil {
+				go resp.serve(msg)
+			}
+		}
+	} else {
+		if n, ok := m.trees[ActionType(action)]; ok {
+			leaf := n.children[resource]
+			if leaf != nil {
+				leaf.handle.ServeMessage(w, msg)
+				return
+			}
 		}
 	}
 
 	if m.NotFoundHandler != nil {
-		m.NotFoundHandler.ServeMessage(msg)
+		m.NotFoundHandler.ServeMessage(w, msg)
 	}
 }
 
+func (m *ServeMux) PublishRequest(topic string, msg Message, tags []string) (*Message, error) {
+	delivery, stop, tmOut := m.waitRPC.add(msg.Id, m.daedline)
+	err := m.Publish(topic, msg, tags)
+	if err != nil {
+		stop()
+		return nil, err
+	}
+
+	rmsg := <-delivery
+	stop()
+
+	m.waitRPC.delete(msg.Id)
+
+	if tmOut() {
+		return nil, ErrTimeout
+	}
+
+	return rmsg, nil
+}
+
 const (
-	rotMask  int8 = (1 << 6) + (1 << 6) - 1
-	lastBit  int8 = 1 << 6
-	startBit int8 = 1
+	stateMask int8 = (1 << 6) + (1 << 6) - 1
+	startBit  int8 = 1
+	firstBit  int8 = startBit << 1
+	lastBit   int8 = 1 << 6
 )
 
 func rotatebit(i int8) int8 {
-	if (i & rotMask) == 0 {
-		return ((1 << 1) & rotMask) | (i & startBit)
+	if (i & (stateMask & ^startBit)) == 0 {
+		return ((1 << 1) & stateMask) | (i & startBit)
 	}
-	return (((i & rotMask) << 1) & rotMask) | (i & startBit)
+	return (((i & (stateMask & ^startBit)) << 1) & stateMask) | (i & startBit)
 }
 
 func (m *ServeMux) StartServe(opts ...interface{}) error {
@@ -193,6 +238,9 @@ func (m *ServeMux) serve(fn func() (<-chan *Message, error)) error {
 	m.reconn = make(chan int8, 1)
 	// write start bit
 	m.reconn <- 1
+	defer func() {
+		m.serving.setFalse()
+	}()
 
 	for {
 		select {
@@ -204,7 +252,7 @@ func (m *ServeMux) serve(fn func() (<-chan *Message, error)) error {
 			if (state & lastBit) != 0 {
 				// long wait
 				time.Sleep(300 * time.Second)
-			} else if (state & rotMask) != 0 {
+			} else if (state & (stateMask & ^startBit)) != 0 {
 				// short wait
 				time.Sleep(10 * time.Second)
 			}
@@ -215,9 +263,12 @@ func (m *ServeMux) serve(fn func() (<-chan *Message, error)) error {
 					return err
 				}
 
+				m.serving.setFalse()
 				m.reconn <- rotatebit(state)
 				continue
 			}
+
+			m.serving.setTrue()
 
 		case msg, ok := <-delivery:
 			if !ok {
@@ -226,9 +277,22 @@ func (m *ServeMux) serve(fn func() (<-chan *Message, error)) error {
 				continue
 			}
 
-			m.ServeMessage(msg)
+			m.ServeMessage(m.newResponse(msg), msg)
 		}
 	}
+}
+
+func (m *ServeMux) newResponse(msg *Message) *response {
+	rr := new(response)
+	rr.mux = m
+	rr.msg = &Message{
+		Headers: make(Header),
+	}
+
+	rr.msg.Headers.SetInt64(headerAction, int64(actionNoop))
+	rr.msg.Headers.SetString(headerResponse, msg.Id)
+
+	return rr
 }
 
 func (m *ServeMux) call(auth *AuthOption, sub *SubOption) func() (<-chan *Message, error) {
@@ -302,6 +366,10 @@ func SetMessageActionDelete(m *Message, resource string) {
 }
 
 func SetMessageActionGet(m *Message, resource string) {
+	if m.Headers == nil {
+		m.Headers = make(Header)
+	}
+
 	m.Headers.SetInt64(headerAction, int64(ActionGet))
 	m.Headers.SetString(headerResource, resource)
 }
