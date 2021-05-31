@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/Agent-Plus/go-grpc-broker/api"
 	"github.com/golang/protobuf/ptypes/empty"
@@ -16,6 +17,7 @@ import (
 
 var (
 	ErrServerUnavailable = errors.New("server unavailable")
+	ErrTimeout           = errors.New("timeout")
 	ErrUnauthenticated   = errors.New("unauthenticated")
 )
 
@@ -35,6 +37,7 @@ type ExchangeClient struct {
 	subscribed string
 
 	// connection id
+	tkm   sync.Mutex
 	token string
 }
 
@@ -62,6 +65,9 @@ func (ec *ExchangeClient) metadata() context.Context {
 }
 
 func (ec *ExchangeClient) Authenticate(name, secret string) error {
+	ec.tkm.Lock()
+	defer ec.tkm.Unlock()
+
 	// check token value, prefilled value means authenticated otherwise try to send Authenticate request
 	if len(ec.token) == 0 {
 		tk, err := ec.api.Authenticate(context.Background(), &api.Identity{Id: name, Secret: secret})
@@ -93,9 +99,9 @@ func (ec *ExchangeClient) Subscribe(name, tag string, exc bool) error {
 type Message struct {
 	Body        []byte
 	ContentType string
-	CorId       string
-	Headers     Header
-	Id          string
+	//CorId       string
+	Headers Header
+	Id      string
 }
 
 type streamWorker struct {
@@ -143,8 +149,8 @@ func readStrem(stream api.Exchange_ConsumeClient, worker *streamWorker) {
 
 			m := &Message{
 				ContentType: msg.ContentType,
-				CorId:       msg.CorId,
-				Id:          msg.Id,
+				//CorId:       msg.CorId,
+				Id: msg.Id,
 			}
 
 			if ln := len(msg.Body); ln > 0 {
@@ -171,8 +177,8 @@ func (ec *ExchangeClient) Publish(topic string, msg Message, tags []string) erro
 
 	m := &api.Message{
 		ContentType: msg.ContentType,
-		CorId:       msg.CorId,
-		Id:          msg.Id,
+		//CorId:       msg.CorId,
+		Id: msg.Id,
 	}
 
 	if ln := len(msg.Body); ln > 0 {

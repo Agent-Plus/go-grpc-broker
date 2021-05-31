@@ -2,10 +2,12 @@ package client
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"sync"
 	"testing"
+	"time"
 
 	broker "github.com/Agent-Plus/go-grpc-broker"
 	"github.com/Agent-Plus/go-grpc-broker/api"
@@ -241,4 +243,124 @@ func TestConsumeAndPublishTags(t *testing.T) {
 	assert.Contains(t, atm, "route_b")
 	assert.ElementsMatch(t, []int64{1, 2, 4}, atm["route_a"])
 	assert.ElementsMatch(t, []int64{1, 3, 4}, atm["route_b"])
+}
+
+func TestMuxTimeoutPublishAndResponse(t *testing.T) {
+	var pub *ServeMux
+	if c, err := newClient(); err != nil {
+		t.Fatal(err)
+	} else {
+		pub = NewServeMux(c)
+	}
+	pub.daedline = time.Now().Add(10 * time.Millisecond)
+
+	err := pub.Authenticate("6704be61-3d72-4241-a740-ffb0d6c56da8", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = pub.Subscribe("foo", "", true)
+	if err != nil {
+		t.Error(err)
+	}
+
+	_, err = pub.PublishRequest("foo", Message{
+		Id: "123456",
+	}, nil)
+
+	if err == nil || !errors.Is(err, ErrTimeout) {
+		t.Error("required error on timeout, but got: ", err)
+	}
+}
+
+func TestMuxPublishAndResponse(t *testing.T) {
+	// remote subscriber A
+	var sub *ServeMux
+	if c, err := newClient(); err != nil {
+		t.Fatal(err)
+	} else {
+		sub = NewServeMux(c)
+	}
+
+	// remote subscriber B
+	var pub *ServeMux
+	if c, err := newClient(); err != nil {
+		t.Fatal(err)
+	} else {
+		pub = NewServeMux(c)
+	}
+
+	sub.Get("ping", HandlerFunc(func(w ResponseWriter, msg *Message) {
+		if string(msg.Body) != "ping" {
+			t.Errorf("wrong request message body: %s", msg.Body)
+		}
+
+		w.SetId("123457")
+		w.SetBody([]byte("pong"))
+		w.Publish("foo-rpc", nil)
+	}))
+
+	go func() {
+		err := sub.StartServe(AuthOption{
+			Id:     "910353f5-a2e9-4f5d-b0dd-bd5d9b3660ea",
+			Secret: "secret",
+		}, SubOption{
+			Topic:     "foo-rpc",
+			Exclusive: true,
+		})
+
+		if err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	go func() {
+		err := pub.StartServe(AuthOption{
+			Id:     "6704be61-3d72-4241-a740-ffb0d6c56da8",
+			Secret: "secret",
+		}, SubOption{
+			Topic:     "foo-rpc",
+			Exclusive: true,
+		})
+
+		if err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			if sub.serving.isSet() && pub.serving.isSet() {
+				break
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	msg := Message{
+		Id:   "123456",
+		Body: []byte("ping"),
+	}
+	SetMessageActionGet(&msg, "ping")
+	resp, err := pub.PublishRequest("foo-rpc", msg, nil)
+
+	if err != nil {
+		t.Error(err)
+	}
+
+	if resp == nil {
+		t.Error("response must not be nil")
+	} else {
+		if resp.Id != "123457" {
+			t.Errorf("wrong id: %s", resp.Id)
+		}
+
+		if string(resp.Body) != "pong" {
+			t.Errorf("wrong response body: %s", resp.Body)
+		}
+	}
 }
