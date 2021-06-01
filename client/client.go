@@ -275,6 +275,7 @@ func onError(err error) error {
 	return err
 }
 
+// WithAuthentication creates client option with given application id and secret
 func WithAuthentication(id, secret string) ClientOption {
 	return &identity{
 		api.Identity{Id: id, Secret: secret},
