@@ -27,22 +27,28 @@ type ExchangeClient struct {
 	// server address
 	address string
 
-	// authentication credentials
-	// application identifier
-	id string
-	// authentication secret
-	secret string
+	// authentication supplier
+	aa *authentication
 
 	// client is subscribed
 	subscribed string
-
-	// connection id
-	tkm   sync.Mutex
-	token string
 }
 
-func New() *ExchangeClient {
-	return &ExchangeClient{}
+type ClientOption interface {
+	apply(*ExchangeClient)
+}
+
+func New(opt ...ClientOption) *ExchangeClient {
+	c := &ExchangeClient{
+		aa: &authentication{},
+	}
+
+	if len(opt) > 0 {
+		for _, f := range opt {
+			f.apply(c)
+		}
+	}
+	return c
 }
 
 func (ec *ExchangeClient) Dial(addr string) error {
@@ -58,25 +64,68 @@ func (ec *ExchangeClient) Dial(addr string) error {
 }
 
 func (ec *ExchangeClient) metadata() context.Context {
-	return metadata.AppendToOutgoingContext(
-		context.Background(),
-		"authorization", "Bearer "+ec.token,
-	)
+	ctx := context.Background()
+
+	ec.aa.Lock()
+	tk := ec.aa.token
+	ec.aa.Unlock()
+
+	if len(tk) > 0 {
+		ctx = metadata.AppendToOutgoingContext(
+			ctx,
+			"authorization", "Bearer "+tk,
+		)
+	}
+
+	return ctx
 }
 
-func (ec *ExchangeClient) Authenticate(name, secret string) error {
-	ec.tkm.Lock()
-	defer ec.tkm.Unlock()
+type authentication struct {
+	identity *api.Identity
 
-	// check token value, prefilled value means authenticated otherwise try to send Authenticate request
-	if len(ec.token) == 0 {
-		tk, err := ec.api.Authenticate(context.Background(), &api.Identity{Id: name, Secret: secret})
-		if err != nil {
-			return ec.onError(err)
-		}
+	// stores authenticated session
+	token string
 
-		ec.token = tk.Key
+	sync.Mutex
+}
+
+type authCaller interface {
+	Authenticate(context.Context, *api.Identity, ...grpc.CallOption) (*api.Token, error)
+}
+
+func (a *authentication) do(af authCaller) error {
+	if a.identity == nil {
+		// not configures
+		return nil
 	}
+
+	if len(a.token) > 0 {
+		// already authenticated
+		return nil
+	}
+
+	tk, err := af.Authenticate(context.Background(), a.identity)
+	if err != nil {
+		return onError(err)
+	}
+
+	a.token = tk.Key
+	return nil
+}
+
+// Authenticate implements gRPC client Authentication method,
+// it sends given application id and secret to the server and on
+// success response keeps session token for the futher calls.
+// Given credential overwrites previuos known, which were configured
+// through the ClientOption.
+// Authenticate is concurrent safe.
+func (ec *ExchangeClient) Authenticate(id, secret string) (err error) {
+	ec.aa.Lock()
+	// overwrite credential
+	ec.aa.identity = &api.Identity{Id: id, Secret: secret}
+	// call authentication
+	err = ec.aa.do(ec.api)
+	ec.aa.Unlock()
 
 	return nil
 }
@@ -89,7 +138,7 @@ func (ec *ExchangeClient) Subscribe(name, tag string, exc bool) error {
 		Exclusive: exc,
 	})
 	if err != nil {
-		return ec.onError(err)
+		return onError(err)
 	}
 
 	ec.subscribed = name
@@ -99,9 +148,8 @@ func (ec *ExchangeClient) Subscribe(name, tag string, exc bool) error {
 type Message struct {
 	Body        []byte
 	ContentType string
-	//CorId       string
-	Headers Header
-	Id      string
+	Headers     Header
+	Id          string
 }
 
 type streamWorker struct {
@@ -113,7 +161,7 @@ func (ec *ExchangeClient) Consume() (<-chan *Message, error) {
 	ctx := ec.metadata()
 	stream, err := ec.api.Consume(ctx, &empty.Empty{})
 	if err != nil {
-		return nil, ec.onError(err)
+		return nil, onError(err)
 	}
 
 	if header, err := stream.Header(); err != nil {
@@ -149,8 +197,7 @@ func readStrem(stream api.Exchange_ConsumeClient, worker *streamWorker) {
 
 			m := &Message{
 				ContentType: msg.ContentType,
-				//CorId:       msg.CorId,
-				Id: msg.Id,
+				Id:          msg.Id,
 			}
 
 			if ln := len(msg.Body); ln > 0 {
@@ -173,12 +220,19 @@ func readStrem(stream api.Exchange_ConsumeClient, worker *streamWorker) {
 }
 
 func (ec *ExchangeClient) Publish(topic string, msg Message, tags []string) error {
+	ec.aa.Lock()
+	err := ec.aa.do(ec.api)
+	ec.aa.Unlock()
+
+	if err != nil {
+		return err
+	}
+
 	ctx := ec.metadata()
 
 	m := &api.Message{
 		ContentType: msg.ContentType,
-		//CorId:       msg.CorId,
-		Id: msg.Id,
+		Id:          msg.Id,
 	}
 
 	if ln := len(msg.Body); ln > 0 {
@@ -195,25 +249,22 @@ func (ec *ExchangeClient) Publish(topic string, msg Message, tags []string) erro
 		}
 	}
 
-	_, err := ec.api.Publish(ctx, &api.PublishRequest{
+	_, err = ec.api.Publish(ctx, &api.PublishRequest{
 		Topic:   topic,
 		Tag:     tags,
 		Message: m,
 	})
 	if err != nil {
-		return ec.onError(err)
+		return onError(err)
 	}
 
 	return nil
 }
 
-func (ec *ExchangeClient) onError(err error) error {
+func onError(err error) error {
 	if e, ok := status.FromError(err); ok {
 		switch e.Code() {
 		case codes.Unauthenticated:
-			// drop down known token value on Unauthenticated server response
-			ec.token = ""
-
 			err = fmt.Errorf("%v: %w", err, ErrUnauthenticated)
 
 		case codes.Unavailable:
@@ -222,4 +273,23 @@ func (ec *ExchangeClient) onError(err error) error {
 	}
 
 	return err
+}
+
+func WithAuthentication(id, secret string) ClientOption {
+	return &identity{
+		api.Identity{Id: id, Secret: secret},
+	}
+}
+
+type identity struct {
+	api.Identity
+}
+
+func (id *identity) apply(ec *ExchangeClient) {
+	ec.aa.Lock()
+	ec.aa.identity = &api.Identity{
+		Id:     id.Id,
+		Secret: id.Secret,
+	}
+	ec.aa.Unlock()
 }

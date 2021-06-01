@@ -48,8 +48,8 @@ func bufDialer(context.Context, string) (net.Conn, error) {
 	return lis.Dial()
 }
 
-func newClient() (*ExchangeClient, error) {
-	c := &ExchangeClient{}
+func newClient(opt ...ClientOption) (*ExchangeClient, error) {
+	c := New(opt...)
 
 	conn, err := grpc.DialContext(context.Background(), "bufnet", grpc.WithContextDialer(bufDialer), grpc.WithInsecure())
 	if err != nil {
@@ -71,7 +71,7 @@ func TestAuthenticate(t *testing.T) {
 		t.Error(err)
 	}
 
-	if len(cl.token) == 0 {
+	if len(cl.aa.token) == 0 {
 		t.Error("empty session token")
 	}
 }
@@ -133,9 +133,9 @@ func TestConsumeAndPublish(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
+	wg.Add(1)
 
 	go func() {
-		wg.Add(1)
 		defer wg.Done()
 		for {
 			m := <-dlv
@@ -363,4 +363,26 @@ func TestMuxPublishAndResponse(t *testing.T) {
 			t.Errorf("wrong response body: %s", resp.Body)
 		}
 	}
+}
+
+func TestAuthConcurrence(t *testing.T) {
+	cl, err := newClient()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(10)
+	for i := 0; i < 10; i++ {
+		go func() {
+			err := cl.Authenticate("6704be61-3d72-4241-a740-ffb0d6c56da8", "secret")
+			if err != nil {
+				t.Error(err)
+			}
+
+			wg.Done()
+		}()
+	}
+
+	wg.Wait()
 }
