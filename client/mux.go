@@ -168,6 +168,12 @@ func (m *ServeMux) ServeMessage(w ResponseWriter, msg *Message) {
 	}
 }
 
+func (m *ServeMux) StartServe(name, tag string, exc bool) Closer {
+	return m.ExchangeClient.StartServe(func(msg *Message) {
+		m.ServeMessage(m.newResponse(msg), msg)
+	}, name, tag, exc)
+}
+
 func (m *ServeMux) PublishRequest(topic string, msg Message, tags []string) (*Message, error) {
 	delivery, stop, tmOut := m.waitRPC.add(msg.Id, m.daedline)
 	err := m.Publish(topic, msg, tags)
@@ -188,100 +194,6 @@ func (m *ServeMux) PublishRequest(topic string, msg Message, tags []string) (*Me
 	return rmsg, nil
 }
 
-const (
-	stateMask int8 = (1 << 6) + (1 << 6) - 1
-	startBit  int8 = 1
-	firstBit  int8 = startBit << 1
-	lastBit   int8 = 1 << 6
-)
-
-func rotatebit(i int8) int8 {
-	if (i & (stateMask & ^startBit)) == 0 {
-		return ((1 << 1) & stateMask) | (i & startBit)
-	}
-	return (((i & (stateMask & ^startBit)) << 1) & stateMask) | (i & startBit)
-}
-
-func (m *ServeMux) StartServe(opts ...interface{}) error {
-	var (
-		auth *AuthOption
-		sub  *SubOption
-	)
-
-	for _, v := range opts {
-		if sb, ok := v.(SubOption); ok {
-			sub = &sb
-		} else {
-			if sb, ok := v.(*SubOption); ok {
-				sub = sb
-			}
-		}
-
-		if au, ok := v.(AuthOption); ok {
-			auth = &au
-		} else {
-			if au, ok := v.(*AuthOption); ok {
-				auth = au
-			}
-		}
-	}
-
-	return m.serve(m.call(auth, sub))
-}
-
-func (m *ServeMux) serve(fn func() (<-chan *Message, error)) error {
-	var (
-		err      error
-		delivery <-chan *Message
-	)
-
-	m.reconn = make(chan int8, 1)
-	// write start bit
-	m.reconn <- 1
-	defer func() {
-		m.serving.setFalse()
-	}()
-
-	for {
-		select {
-		case state := <-m.reconn:
-			if (state & startBit) == 0 {
-				return nil
-			}
-
-			if (state & lastBit) != 0 {
-				// long wait
-				time.Sleep(300 * time.Second)
-			} else if (state & (stateMask & ^startBit)) != 0 {
-				// short wait
-				time.Sleep(10 * time.Second)
-			}
-
-			delivery, err = fn()
-			if err != nil {
-				if errors.Is(err, ErrUnauthenticated) {
-					return err
-				}
-
-				m.serving.setFalse()
-				m.reconn <- rotatebit(state)
-				continue
-			}
-
-			m.serving.setTrue()
-
-		case msg, ok := <-delivery:
-			if !ok {
-				// channel was lost, try to reconnect
-				m.reconn <- 1
-				continue
-			}
-
-			m.ServeMessage(m.newResponse(msg), msg)
-		}
-	}
-}
-
 func (m *ServeMux) newResponse(msg *Message) *response {
 	rr := new(response)
 	rr.mux = m
@@ -293,28 +205,6 @@ func (m *ServeMux) newResponse(msg *Message) *response {
 	rr.msg.Headers.SetString(headerResponse, msg.Id)
 
 	return rr
-}
-
-func (m *ServeMux) call(auth *AuthOption, sub *SubOption) func() (<-chan *Message, error) {
-	return func() (<-chan *Message, error) {
-		if auth != nil {
-			if err := m.Authenticate(auth.Id, auth.Secret); err != nil {
-				return nil, err
-			}
-		}
-
-		if sub != nil && !sub.subscribed {
-			err := m.Subscribe(sub.Topic, sub.Tag, sub.Exclusive)
-			if err != nil {
-				sub.subscribed = false
-				return nil, err
-			}
-
-			sub.subscribed = true
-		}
-
-		return m.Consume()
-	}
 }
 
 func (m *ServeMux) recv(msg *Message) {

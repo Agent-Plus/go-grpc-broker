@@ -276,7 +276,9 @@ func TestMuxTimeoutPublishAndResponse(t *testing.T) {
 func TestMuxPublishAndResponse(t *testing.T) {
 	// remote subscriber A
 	var sub *ServeMux
-	if c, err := newClient(); err != nil {
+	if c, err := newClient(
+		WithAuthentication("910353f5-a2e9-4f5d-b0dd-bd5d9b3660ea", "secret"),
+	); err != nil {
 		t.Fatal(err)
 	} else {
 		sub = NewServeMux(c)
@@ -284,7 +286,7 @@ func TestMuxPublishAndResponse(t *testing.T) {
 
 	// remote subscriber B
 	var pub *ServeMux
-	if c, err := newClient(); err != nil {
+	if c, err := newClient(WithAuthentication("6704be61-3d72-4241-a740-ffb0d6c56da8", "secret")); err != nil {
 		t.Fatal(err)
 	} else {
 		pub = NewServeMux(c)
@@ -300,40 +302,19 @@ func TestMuxPublishAndResponse(t *testing.T) {
 		w.Publish("foo-rpc", nil)
 	}))
 
-	go func() {
-		err := sub.StartServe(AuthOption{
-			Id:     "910353f5-a2e9-4f5d-b0dd-bd5d9b3660ea",
-			Secret: "secret",
-		}, SubOption{
-			Topic:     "foo-rpc",
-			Exclusive: true,
-		})
-
-		if err != nil {
-			t.Fatal(err)
-		}
-	}()
-
-	go func() {
-		err := pub.StartServe(AuthOption{
-			Id:     "6704be61-3d72-4241-a740-ffb0d6c56da8",
-			Secret: "secret",
-		}, SubOption{
-			Topic:     "foo-rpc",
-			Exclusive: true,
-		})
-
-		if err != nil {
-			t.Fatal(err)
-		}
-	}()
+	sc := sub.StartServe("foo-rpc", "", true)
+	pc := pub.StartServe("foo-rpc", "", true)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
+
+	// wait clients are ready to test ping-pong with response wait
 	go func() {
 		defer wg.Done()
+		so := sc.(*observer)
+		po := pc.(*observer)
 		for {
-			if sub.serving.isSet() && pub.serving.isSet() {
+			if po.serving.isSet() && so.serving.isSet() {
 				break
 			}
 		}

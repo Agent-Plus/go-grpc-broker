@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Agent-Plus/go-grpc-broker/api"
 	"github.com/golang/protobuf/ptypes/empty"
@@ -130,21 +131,6 @@ func (ec *ExchangeClient) Authenticate(id, secret string) (err error) {
 	return nil
 }
 
-func (ec *ExchangeClient) Subscribe(name, tag string, exc bool) error {
-	ctx := ec.metadata()
-	_, err := ec.api.Subscribe(ctx, &api.SubscribeRequest{
-		Name:      name,
-		Tag:       tag,
-		Exclusive: exc,
-	})
-	if err != nil {
-		return onError(err)
-	}
-
-	ec.subscribed = name
-	return nil
-}
-
 type Message struct {
 	Body        []byte
 	ContentType string
@@ -259,6 +245,134 @@ func (ec *ExchangeClient) Publish(topic string, msg Message, tags []string) erro
 	}
 
 	return nil
+}
+
+func (ec *ExchangeClient) Subscribe(name, tag string, exc bool) error {
+	ctx := ec.metadata()
+	_, err := ec.api.Subscribe(ctx, &api.SubscribeRequest{
+		Name:      name,
+		Tag:       tag,
+		Exclusive: exc,
+	})
+	if err != nil {
+		return onError(err)
+	}
+
+	ec.subscribed = name
+	return nil
+}
+
+type MessageHandlerFunc func(*Message)
+
+// StartServe is complex
+func (ec *ExchangeClient) StartServe(hd MessageHandlerFunc, name, tag string, exc bool) Closer {
+	o := &observer{
+		topic:     name,
+		tag:       tag,
+		exclusive: exc,
+		cl:        ec,
+	}
+
+	go o.serve(hd)
+	return o
+}
+
+const (
+	stateMask int8 = (1 << 6) + (1 << 6) - 1
+	startBit  int8 = 1
+	firstBit  int8 = startBit << 1
+	lastBit   int8 = 1 << 6
+)
+
+func rotatebit(i int8) int8 {
+	if (i & (stateMask & ^startBit)) == 0 {
+		return ((1 << 1) & stateMask) | (i & startBit)
+	}
+	return (((i & (stateMask & ^startBit)) << 1) & stateMask) | (i & startBit)
+}
+
+type observer struct {
+	topic     string
+	tag       string
+	exclusive bool
+
+	cl      *ExchangeClient
+	reconn  chan int8
+	serving atomicBool
+}
+
+type Closer interface {
+	Close()
+}
+
+func (o *observer) Close() {
+	o.reconn <- 0
+}
+
+func (o *observer) serve(hd MessageHandlerFunc) Closer {
+	var (
+		err      error
+		delivery <-chan *Message
+	)
+
+	o.reconn = make(chan int8, 1)
+	// write start bit
+	o.reconn <- 1
+
+	defer func() {
+		o.serving.setFalse()
+		close(o.reconn)
+	}()
+
+	for {
+		select {
+		case state := <-o.reconn:
+			if (state & startBit) == 0 {
+				return nil
+			}
+
+			if (state & lastBit) != 0 {
+				// long wait
+				time.Sleep(300 * time.Second)
+			} else if (state & (stateMask & ^startBit)) != 0 {
+				// short wait
+				time.Sleep(10 * time.Second)
+			}
+
+			delivery, err = o.calls()
+			if err != nil {
+				o.serving.setFalse()
+				o.reconn <- rotatebit(state)
+				continue
+			}
+
+			o.serving.setTrue()
+
+		case msg, ok := <-delivery:
+			if !ok {
+				// channel was lost, try to reconnect
+				o.reconn <- 1
+				continue
+			}
+
+			hd(msg)
+		}
+	}
+}
+
+func (o *observer) calls() (<-chan *Message, error) {
+	if err := o.cl.aa.do(o.cl.api); err != nil {
+		return nil, err
+	}
+
+	if !o.serving.isSet() {
+		err := o.cl.Subscribe(o.topic, o.tag, o.exclusive)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return o.cl.Consume()
 }
 
 func onError(err error) error {
