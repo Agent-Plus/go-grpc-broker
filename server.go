@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/Agent-Plus/go-grpc-broker/api"
-	"github.com/golang/protobuf/ptypes/empty"
 	uuid "github.com/satori/go.uuid"
 
 	"google.golang.org/grpc"
@@ -131,9 +130,9 @@ func tkFromHeader(ctx context.Context) string {
 	return ""
 }
 
-// Consume implements api.ExchangeServer interface to start pulling messages from
+// Consume implements api interface to start pulling messages from
 // the topic which client was subscribed earlier.
-func (m *ExchangeServer) Consume(_ *empty.Empty, stream api.Exchange_ConsumeServer) error {
+func (m *ExchangeServer) Consume(req *api.ConsumeRequest, stream api.Exchange_ConsumeServer) error {
 	tk := tkFromHeader(stream.Context())
 	if len(tk) == 0 {
 		return status.Error(codes.Unauthenticated, ErrUknonwToken.Error())
@@ -144,9 +143,14 @@ func (m *ExchangeServer) Consume(_ *empty.Empty, stream api.Exchange_ConsumeServ
 		return status.Error(codes.Unauthenticated, err.Error())
 	}
 
-	queue := ch.Consume()
+	var id uuid.UUID
+	if id, err = uuid.FromString(req.Id); err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	queue := ch.Consume(id)
 	// TODO: need trailer message
-	defer ch.StopConsume()
+	defer ch.StopConsume(id)
 
 	header := metadata.Pairs("x-state", "established")
 	if err := stream.SendHeader(header); err != nil {
@@ -204,12 +208,14 @@ func (m *ExchangeServer) Subscribe(ctx context.Context, sb *api.SubscribeRequest
 		return nil, status.Error(codes.Unauthenticated, err.Error())
 	}
 
-	err = ch.Subscribe(sb.Name, sb.Tag, sb.Exclusive)
+	id, err := ch.Subscribe(sb.Name, sb.Tag, sb.Exclusive)
 	if err != nil {
 		return nil, err
 	}
 
-	return &api.SubscribeResponse{}, nil
+	return &api.SubscribeResponse{
+		Id: id.String(),
+	}, nil
 }
 
 // Run starts networking

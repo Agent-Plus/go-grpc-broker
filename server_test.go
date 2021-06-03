@@ -10,8 +10,6 @@ import (
 	"testing"
 
 	"github.com/Agent-Plus/go-grpc-broker/api"
-	"github.com/golang/protobuf/ptypes/empty"
-
 	uuid "github.com/satori/go.uuid"
 
 	"google.golang.org/grpc"
@@ -148,11 +146,14 @@ func TestSubscribe(t *testing.T) {
 	}
 
 	ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+tk.Key)
-	_, err = client.Subscribe(ctx, &api.SubscribeRequest{
+	res, err := client.Subscribe(ctx, &api.SubscribeRequest{
 		Name: "foo",
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if len(res.Id) == 0 {
+		t.Error("Subscribe returns empty UUID")
 	}
 }
 
@@ -176,7 +177,8 @@ func TestConsume(t *testing.T) {
 	}
 
 	ctx = metadata.AppendToOutgoingContext(ctx, "authorization", "Bearer "+tk.Key)
-	_, err = client.Subscribe(ctx, &api.SubscribeRequest{
+	var res *api.SubscribeResponse
+	res, err = client.Subscribe(ctx, &api.SubscribeRequest{
 		Name: "foo",
 	})
 	if err != nil {
@@ -189,7 +191,7 @@ func TestConsume(t *testing.T) {
 		wg     sync.WaitGroup
 	)
 
-	stream, err = client.Consume(ctx, &empty.Empty{})
+	stream, err = client.Consume(ctx, &api.ConsumeRequest{Id: res.Id})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +200,7 @@ func TestConsume(t *testing.T) {
 		t.Fatal(err)
 	} else {
 		if v := header.Get("x-state"); len(v) > 0 && v[0] == "established" {
-			//t.Log("x-state:", v)
+			t.Log("x-state:", v)
 		}
 	}
 
@@ -250,16 +252,11 @@ func TestRPCDialog(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer cla.conn.Close()
-
-	cla.ctx = metadata.AppendToOutgoingContext(cla.ctx, "authorization", "Bearer "+cla.tk.Key)
-	_, err = cla.ch.Subscribe(cla.ctx, &api.SubscribeRequest{
-		Name:      "foo-rpc",
-		Exclusive: true,
-	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer cla.conn.Close()
+	cla.ctx = metadata.AppendToOutgoingContext(cla.ctx, "authorization", "Bearer "+cla.tk.Key)
 
 	// prepare client B
 	var clb *clientChann
@@ -268,15 +265,7 @@ func TestRPCDialog(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer clb.conn.Close()
-
 	clb.ctx = metadata.AppendToOutgoingContext(clb.ctx, "authorization", "Bearer "+clb.tk.Key)
-	_, err = clb.ch.Subscribe(clb.ctx, &api.SubscribeRequest{
-		Name:      "foo-rpc",
-		Exclusive: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	// dialog
 	var wg sync.WaitGroup
@@ -291,9 +280,15 @@ func TestRPCDialog(t *testing.T) {
 	p2p := func(cl *clientChann) {
 		defer wg.Done()
 
-		var err error
-		ctx := metadata.AppendToOutgoingContext(cl.ctx, "authorization", "Bearer "+cl.tk.Key)
-		cl.stream, err = cl.ch.Consume(ctx, &empty.Empty{})
+		res, err := cl.ch.Subscribe(cl.ctx, &api.SubscribeRequest{
+			Name:      "foo-rpc",
+			Exclusive: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		cl.stream, err = cl.ch.Consume(cl.ctx, &api.ConsumeRequest{Id: res.Id})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -358,9 +353,8 @@ func TestRPCDialog(t *testing.T) {
 		}
 	}
 
-	wg.Add(1)
+	wg.Add(2)
 	go p2p(cla)
-	wg.Add(1)
 	go p2p(clb)
 
 	wg.Wait()

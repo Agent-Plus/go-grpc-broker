@@ -13,7 +13,10 @@ import (
 // topic keeps modes: fanout or exclusive. The fanout mode push to each
 // receiver except publisher. The exclusive mode means one-to-one communication like RPC.
 type topic struct {
-	channels *sliceStore
+	dlv *deliveryStore
+
+	// topic identifier
+	id uuid.UUID
 
 	// topic is exclusive to use as RPC
 	exclusive bool
@@ -35,18 +38,26 @@ func (tp *topic) send(ctx context.Context, pb *publisher) error {
 		errStack = &CircuitErrors{}
 	}
 
-	for _, ch := range tp.channels.registry {
-		// skip self receiver
-		if uuid.Equal(ch.token, pb.channel.token) {
+	for _, d := range tp.dlv.registry {
+		if !d.ready.isSet() {
+			// delivery container is not pulled
 			continue
 		}
 
-		if len(pb.tags) > 0 && !ch.isTag(pb.tags) {
+		// skip self receiver for the exclusive topic
+		if tp.exclusive {
+			if uuid.Equal(d.chId, pb.channel.token) {
+				continue
+			}
+
+		}
+
+		if len(pb.tags) > 0 && !d.isTag(pb.tags) {
 			continue
 		}
 
 		tm.Reset(tp.ttl)
-		err := ch.send(ctx, pb.request, tm.C)
+		err := d.send(ctx, pb.request, tm.C)
 		tm.Stop()
 
 		if err != nil {
@@ -61,7 +72,7 @@ func (tp *topic) send(ctx context.Context, pb *publisher) error {
 
 				errStack.err = append(
 					errStack.err,
-					fmt.Errorf("topic=(%s), channel=(%s): %w", tp.name, ch.token.String(), err),
+					fmt.Errorf("topic=(%s): %w", tp.name, err),
 				)
 
 				// TODO: maybe for the fanout this case should raise StopConsume channel?..
@@ -88,19 +99,19 @@ type subscriptions struct {
 }
 
 func (s *subscriptions) topic(name string) *topic {
-	s.RLock()
+	s.Lock()
 	tp, _ := s.subsr[name]
-	s.RUnlock()
+	s.Unlock()
 
 	return tp
 }
 
-func (s *subscriptions) subscribe(ch *Channel, name string, exc bool) error {
+func (s *subscriptions) subscribe(ch *Channel, name, tag string, exc bool) (uuid.UUID, error) {
 	tp := s.topic(name)
 
 	if tp == nil {
 		tp = &topic{
-			channels:  newSliceStore(),
+			dlv:       newDeliveryStore(),
 			exclusive: exc,
 			name:      name,
 			ttl:       10 * time.Millisecond,
@@ -111,23 +122,45 @@ func (s *subscriptions) subscribe(ch *Channel, name string, exc bool) error {
 		s.Unlock()
 	}
 
+	// exclusive topic means only two subscribers to communicate,
+	// topic is RPC bus
 	if tp.exclusive {
-		tp.channels.Lock()
-		ln := tp.channels.len()
-		tp.channels.Unlock()
+		cnt := 0
+		tp.dlv.Lock()
+		for _, d := range tp.dlv.registry {
+			if _, ok := ch.pool[d.id]; ok {
+				tp.dlv.Unlock()
+				return d.id, nil
+			}
 
-		if ln < 2 {
+			cnt++
+		}
+		tp.dlv.Unlock()
+
+		if cnt < 2 {
 			// ok
 		} else {
-			return ErrSubscribeExclusiveFull
+			return uuid.UUID{}, ErrSubscribeExclusiveFull
 		}
 	}
 
-	tp.channels.Lock()
-	if idx := tp.channels.index(ch.token); idx < 0 {
-		tp.channels.add(ch)
+	// create delivery container
+	dlv := &delivery{
+		id:     uuid.NewV4(),
+		chId:   ch.token,
+		tpName: name,
+		tag:    tag,
 	}
-	tp.channels.Unlock()
 
-	return nil
+	// add to channel pool of the delivery
+	ch.mutex.Lock()
+	ch.pool[dlv.id] = dlv
+	ch.mutex.Unlock()
+
+	// add to the topic delivery registry
+	tp.dlv.Lock()
+	tp.dlv.add(dlv)
+	tp.dlv.Unlock()
+
+	return dlv.id, nil
 }

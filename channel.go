@@ -3,6 +3,7 @@ package broker
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Agent-Plus/go-grpc-broker/api"
@@ -10,13 +11,19 @@ import (
 	uuid "github.com/satori/go.uuid"
 )
 
+type atomicBool int32
+
+func (b *atomicBool) isSet() bool { return atomic.LoadInt32((*int32)(b)) != 0 }
+func (b *atomicBool) setTrue()    { atomic.StoreInt32((*int32)(b), 1) }
+func (b *atomicBool) setFalse()   { atomic.StoreInt32((*int32)(b), 0) }
+
 // Channel represents adapter to pull message or to push
 // message to others channels of the exchange topic.
 type Channel struct {
 	mutex sync.RWMutex
 
-	// chanel to pull
-	pull chan *api.Message
+	// channels pool to deliver messages
+	pool map[uuid.UUID]*delivery
 
 	// client identifier
 	cid string
@@ -26,9 +33,6 @@ type Channel struct {
 
 	// determines push attemption time to wait busy channel
 	optTTL time.Duration
-
-	// channel is pulling at the moment
-	pulling bool
 
 	// tag
 	tag string
@@ -41,18 +45,23 @@ type Channel struct {
 func NewChannel() *Channel {
 	return &Channel{
 		optTTL: 10 * time.Second,
+		pool:   make(map[uuid.UUID]*delivery),
 	}
 }
 
 // Consume returns delivering messages channel.
 // Receiver must range over the chan to pull all messages.
-func (ch *Channel) Consume() <-chan *api.Message {
+func (ch *Channel) Consume(id uuid.UUID) <-chan *api.Message {
 	ch.mutex.Lock()
-	ch.pull = make(chan *api.Message)
-	ch.pulling = true
+	dlv, ok := ch.pool[id]
 	ch.mutex.Unlock()
 
-	return ch.pull
+	if ok {
+		dlv.dlv = make(chan *api.Message)
+		dlv.ready.setTrue()
+	}
+
+	return dlv.dlv
 }
 
 type publisher struct {
@@ -90,48 +99,22 @@ func (ch *Channel) Publish(name string, msg *api.Message, tags []string) (int, e
 		return pb.ack, err
 	}
 
-	err := ch.send(ctx, msg, nil)
-	if err != nil {
-		return 0, err
-	}
-
-	return 1, nil
-}
-
-// send writes message to the Channel chan buffer with.
-func (ch *Channel) send(ctx context.Context, msg *api.Message, tm <-chan time.Time) (err error) {
-	ch.mutex.Lock()
-	if !ch.pulling {
-		ch.mutex.Unlock()
-		return ErrChannelNotConsumed
-	}
-	ch.mutex.Unlock()
-
-	select {
-	// message picked up through channel
-	case ch.pull <- msg:
-
-	// context was canceled by timeout or any other reason
-	case <-ctx.Done():
-		err = ctx.Err()
-
-	// the circuit non breaking timeout per message
-	case <-tm:
-		err = ErrWaitTimeout
-	}
-
-	return
+	return 0, ErrStandAloneChannel
 }
 
 // StopConsume marks channel not ready to receive messages,
 // but does not remove subscription.
-func (ch *Channel) StopConsume() {
+func (ch *Channel) StopConsume(id uuid.UUID) {
 	ch.mutex.Lock()
-	if ch.pulling {
-		close(ch.pull)
-	}
-	ch.pulling = false
+	ch.closeConsume(id)
 	ch.mutex.Unlock()
+}
+
+func (ch *Channel) closeConsume(id uuid.UUID) {
+	if dlv, ok := ch.pool[id]; ok && dlv.ready.isSet() {
+		dlv.ready.setFalse()
+		close(dlv.dlv)
+	}
 }
 
 // Subscribe appends channel to the topic with given name. This action reasonable only in the Exchange collection scope,
@@ -141,41 +124,16 @@ func (ch *Channel) StopConsume() {
 // - (true) RPC, topic must have only two members to exchange with messages.
 // Subscribed channel can receive messages just mark with tag, this is additional filter
 // in the topic group.
-func (ch *Channel) Subscribe(name, tag string, exc bool) error {
+func (ch *Channel) Subscribe(name, tag string, exc bool) (uuid.UUID, error) {
 	if ch.ex == nil {
-		return ErrSubscribeStandAloneChannel
+		return uuid.UUID{}, ErrStandAloneChannel
 	}
 
-	err := ch.ex.subscribe(ch, name, exc)
-	if err != nil {
-		return err
-	}
-
-	if len(tag) > 0 {
-		ch.mutex.Lock()
-		ch.tag = tag
-		ch.mutex.Unlock()
-	}
-
-	return nil
+	return ch.ex.subscribe(ch, name, tag, exc)
 }
 
 func (ch *Channel) Token() string {
 	return ch.token.String()
-}
-
-func (ch *Channel) isTag(tags []string) bool {
-	if len(tags) > 0 && len(ch.tag) == 0 {
-		return false
-	}
-
-	for _, tg := range tags {
-		if tg == ch.tag {
-			return true
-		}
-	}
-
-	return false
 }
 
 // kvStore represents key-value store of the channels with manager to control race.
@@ -205,64 +163,4 @@ func (s *kvStore) len() int {
 
 func (s *kvStore) remove(ch *Channel) {
 	delete(s.registry, ch.token)
-}
-
-// sliceStore represents the store of the channels with manager to control race.
-type sliceStore struct {
-	sync.Mutex
-	registry []*Channel
-}
-
-func newSliceStore() *sliceStore {
-	return &sliceStore{
-		// ready for exclusive
-		registry: make([]*Channel, 0, 2),
-	}
-}
-
-func (s *sliceStore) add(ch *Channel) {
-	if cp, ln := cap(s.registry), len(s.registry); cp == ln {
-		buf := make([]*Channel, ln, cp+10)
-		copy(buf, s.registry)
-		s.registry = buf
-	}
-
-	s.registry = append(s.registry, ch)
-}
-
-func (s *sliceStore) channel(id uuid.UUID) *Channel {
-	for _, ch := range s.registry {
-		if uuid.Equal(ch.token, id) {
-			return ch
-		}
-	}
-	return nil
-}
-
-func (s *sliceStore) index(id uuid.UUID) int {
-	for i, ch := range s.registry {
-		if uuid.Equal(ch.token, id) {
-			return i
-		}
-	}
-	return -1
-}
-
-func (s *sliceStore) len() int {
-	return len(s.registry)
-}
-
-func (s *sliceStore) remove(id uuid.UUID) (ch *Channel) {
-	for i, ln := 0, len(s.registry); i < ln; i++ {
-		if uuid.Equal(s.registry[i].token, id) {
-			ch = s.registry[i]
-
-			s.registry[i] = s.registry[ln-1]
-			s.registry[ln-1] = nil
-			s.registry = s.registry[:ln-1]
-			break
-		}
-	}
-
-	return
 }

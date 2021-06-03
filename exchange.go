@@ -26,7 +26,7 @@ var (
 	ErrPublishExclusiveNotConsumed = errors.New("exclusive topic not consumed")
 
 	// ErrSubscribeStandAloneChannel rejects `Subscribe` action for the channel which is not in the `Exchange` scope.
-	ErrSubscribeStandAloneChannel = errors.New("cannot subscribe stand alone channel")
+	ErrStandAloneChannel = errors.New("stand alone channel")
 
 	// ErrUknonwChannel is raised on attempt to retreive uknown channel by token identifier from registry
 	ErrUknonwChannel = errors.New("uknown channel")
@@ -101,14 +101,35 @@ func (ex *Exchange) CloseChannel(id uuid.UUID) {
 	}
 
 	// stop listening
-	ch.StopConsume()
+	ch.mutex.Lock()
+	defer ch.mutex.Unlock()
+
+	// gather all topics where channel is subscribed.
+	// drop read
+	tps := make([]string, 0, len(ch.pool))
+	for id, d := range ch.pool {
+		// drop ready
+		ch.closeConsume(id)
+		// delete object
+		delete(ch.pool, id)
+		// store topic name
+		tps = append(tps, d.tpName)
+	}
 
 	// remove all subscriptions
-	ex.subscriptions.Lock()
-	for _, tp := range ex.subscriptions.subsr {
-		tp.channels.remove(id)
+	for _, name := range tps {
+		tp := ex.topic(name)
+
+		for idx, d := range tp.dlv.registry {
+			if d != nil && !uuid.Equal(d.chId, ch.token) {
+				continue
+			}
+
+			tp.dlv.Lock()
+			tp.dlv.removeAt(idx)
+			tp.dlv.Unlock()
+		}
 	}
-	ex.subscriptions.Unlock()
 
 	// remove from registry
 	ex.channels.Lock()
@@ -125,14 +146,28 @@ func (ex *Exchange) send(ctx context.Context, pb *publisher) error {
 	}
 
 	if tp.exclusive {
-		if ch := tp.channels.channel(pb.channel.token); ch == nil {
+		fnd := 0
+
+		tp.dlv.Lock()
+		rgs := tp.dlv.registry
+		tp.dlv.Unlock()
+
+		for _, d := range rgs {
+			if uuid.Equal(pb.channel.token, d.chId) {
+				// sender is subscribed to this exclusive, next step is available
+				fnd++
+				break
+			}
+		}
+
+		if fnd == 0 {
 			return ErrNotSubscribedExclusive
 		}
 	}
 
-	tp.channels.Lock()
+	tp.dlv.Lock()
 	err := tp.send(ctx, pb)
-	tp.channels.Unlock()
+	tp.dlv.Unlock()
 
 	if err == nil && tp.exclusive && pb.ack == 0 {
 		err = ErrPublishExclusiveNotConsumed
