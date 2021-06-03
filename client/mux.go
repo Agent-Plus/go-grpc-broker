@@ -63,7 +63,7 @@ type ServeMux struct {
 	reconn  chan int8
 	serving atomicBool
 
-	daedline time.Time
+	daedline time.Duration
 	trees    map[ActionType]*node
 	waitRPC  *rpcRegistry
 
@@ -87,7 +87,7 @@ type SubOption struct {
 func NewServeMux(client *ExchangeClient) *ServeMux {
 	return &ServeMux{
 		ExchangeClient: client,
-		daedline:       time.Now().Add(10 * time.Second),
+		daedline:       10 * time.Second,
 		waitRPC: &rpcRegistry{
 			resps: make(map[string]*rpcResponse),
 		},
@@ -175,7 +175,7 @@ func (m *ServeMux) StartServe(name, tag string, exc bool) Closer {
 }
 
 func (m *ServeMux) PublishRequest(topic string, msg Message, tags []string) (*Message, error) {
-	delivery, stop, tmOut := m.waitRPC.add(msg.Id, m.daedline)
+	delivery, stop, tmOut := m.waitRPC.add(msg.Id, time.Now().Add(m.daedline))
 	err := m.Publish(topic, msg, tags)
 	if err != nil {
 		stop()

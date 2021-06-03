@@ -255,7 +255,7 @@ func TestMuxTimeoutPublishAndResponse(t *testing.T) {
 	} else {
 		pub = NewServeMux(c)
 	}
-	pub.daedline = time.Now().Add(10 * time.Millisecond)
+	pub.daedline = 10 * time.Millisecond
 
 	err := pub.Authenticate("6704be61-3d72-4241-a740-ffb0d6c56da8", "secret")
 	if err != nil {
