@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/Agent-Plus/go-grpc-broker/api"
-	"github.com/golang/protobuf/ptypes/empty"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -143,9 +142,9 @@ type streamWorker struct {
 	deliver chan *Message
 }
 
-func (ec *ExchangeClient) Consume() (<-chan *Message, error) {
+func (ec *ExchangeClient) Consume(id string) (<-chan *Message, error) {
 	ctx := ec.metadata()
-	stream, err := ec.api.Consume(ctx, &empty.Empty{})
+	stream, err := ec.api.Consume(ctx, &api.ConsumeRequest{Id: id})
 	if err != nil {
 		return nil, onError(err)
 	}
@@ -247,19 +246,19 @@ func (ec *ExchangeClient) Publish(topic string, msg Message, tags []string) erro
 	return nil
 }
 
-func (ec *ExchangeClient) Subscribe(name, tag string, exc bool) error {
+func (ec *ExchangeClient) Subscribe(name, tag string, exc bool) (string, error) {
 	ctx := ec.metadata()
-	_, err := ec.api.Subscribe(ctx, &api.SubscribeRequest{
+	res, err := ec.api.Subscribe(ctx, &api.SubscribeRequest{
 		Name:      name,
 		Tag:       tag,
 		Exclusive: exc,
 	})
 	if err != nil {
-		return onError(err)
+		return "", onError(err)
 	}
 
 	ec.subscribed = name
-	return nil
+	return res.Id, nil
 }
 
 type MessageHandlerFunc func(*Message)
@@ -297,6 +296,7 @@ type observer struct {
 	exclusive bool
 
 	cl      *ExchangeClient
+	id      string
 	reconn  chan int8
 	serving atomicBool
 }
@@ -312,6 +312,7 @@ func (o *observer) Close() {
 func (o *observer) serve(hd MessageHandlerFunc) Closer {
 	var (
 		err      error
+		sid      string
 		delivery <-chan *Message
 	)
 
@@ -339,7 +340,7 @@ func (o *observer) serve(hd MessageHandlerFunc) Closer {
 				time.Sleep(10 * time.Second)
 			}
 
-			delivery, err = o.calls()
+			delivery, sid, err = o.calls(sid)
 			if err != nil {
 				o.serving.setFalse()
 				o.reconn <- rotatebit(state)
@@ -360,19 +361,25 @@ func (o *observer) serve(hd MessageHandlerFunc) Closer {
 	}
 }
 
-func (o *observer) calls() (<-chan *Message, error) {
-	if err := o.cl.aa.do(o.cl.api); err != nil {
-		return nil, err
+func (o *observer) calls(sid string) (dlv <-chan *Message, id string, err error) {
+	if err = o.cl.aa.do(o.cl.api); err != nil {
+		return
 	}
 
 	if !o.serving.isSet() {
-		err := o.cl.Subscribe(o.topic, o.tag, o.exclusive)
+		id, err = o.cl.Subscribe(o.topic, o.tag, o.exclusive)
 		if err != nil {
-			return nil, err
+			return
 		}
+	} else {
+		id = sid
 	}
 
-	return o.cl.Consume()
+	dlv, err = o.cl.Consume(id)
+	if err != nil {
+		id = ""
+	}
+	return
 }
 
 func onError(err error) error {

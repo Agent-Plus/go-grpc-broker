@@ -87,13 +87,17 @@ func TestSubscribe(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = cl.Subscribe("foo", "", false)
+	id, err := cl.Subscribe("foo", "", false)
 	if err != nil {
 		t.Error(err)
 	}
 
 	if cl.subscribed != "foo" {
 		t.Error("empty subscription")
+	}
+
+	if len(id) == 0 {
+		t.Error("Subscribe did not return subscription id")
 	}
 }
 
@@ -122,12 +126,12 @@ func TestConsumeAndPublish(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = sub.Subscribe("foo", "", false)
+	id, err := sub.Subscribe("foo", "", false)
 	if err != nil {
 		t.Error(err)
 	}
 
-	dlv, err := sub.Consume()
+	dlv, err := sub.Consume(id)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,8 +142,7 @@ func TestConsumeAndPublish(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for {
-			m := <-dlv
-			t.Log(m)
+			<-dlv
 			return
 		}
 	}()
@@ -171,12 +174,12 @@ func TestConsumeAndPublishTags(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		err = sub.Subscribe(topic, tag, false)
+		sid, err := sub.Subscribe(topic, tag, false)
 		if err != nil {
 			t.Error(err)
 		}
 
-		dlv, err := sub.Consume()
+		dlv, err := sub.Consume(sid)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -259,7 +262,7 @@ func TestMuxTimeoutPublishAndResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = pub.Subscribe("foo", "", true)
+	_, err = pub.Subscribe("foo", "", true)
 	if err != nil {
 		t.Error(err)
 	}
