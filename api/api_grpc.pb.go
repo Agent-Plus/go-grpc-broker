@@ -4,7 +4,6 @@ package api
 
 import (
 	context "context"
-	empty "github.com/golang/protobuf/ptypes/empty"
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
 	status "google.golang.org/grpc/status"
@@ -20,7 +19,7 @@ const _ = grpc.SupportPackageIsVersion7
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 type ExchangeClient interface {
 	Authenticate(ctx context.Context, in *Identity, opts ...grpc.CallOption) (*Token, error)
-	Consume(ctx context.Context, in *empty.Empty, opts ...grpc.CallOption) (Exchange_ConsumeClient, error)
+	Consume(ctx context.Context, in *ConsumeRequest, opts ...grpc.CallOption) (Exchange_ConsumeClient, error)
 	Publish(ctx context.Context, in *PublishRequest, opts ...grpc.CallOption) (*PublishResponse, error)
 	Subscribe(ctx context.Context, in *SubscribeRequest, opts ...grpc.CallOption) (*SubscribeResponse, error)
 }
@@ -42,7 +41,7 @@ func (c *exchangeClient) Authenticate(ctx context.Context, in *Identity, opts ..
 	return out, nil
 }
 
-func (c *exchangeClient) Consume(ctx context.Context, in *empty.Empty, opts ...grpc.CallOption) (Exchange_ConsumeClient, error) {
+func (c *exchangeClient) Consume(ctx context.Context, in *ConsumeRequest, opts ...grpc.CallOption) (Exchange_ConsumeClient, error) {
 	stream, err := c.cc.NewStream(ctx, &Exchange_ServiceDesc.Streams[0], "/api.Exchange/Consume", opts...)
 	if err != nil {
 		return nil, err
@@ -97,7 +96,7 @@ func (c *exchangeClient) Subscribe(ctx context.Context, in *SubscribeRequest, op
 // for forward compatibility
 type ExchangeServer interface {
 	Authenticate(context.Context, *Identity) (*Token, error)
-	Consume(*empty.Empty, Exchange_ConsumeServer) error
+	Consume(*ConsumeRequest, Exchange_ConsumeServer) error
 	Publish(context.Context, *PublishRequest) (*PublishResponse, error)
 	Subscribe(context.Context, *SubscribeRequest) (*SubscribeResponse, error)
 	mustEmbedUnimplementedExchangeServer()
@@ -110,7 +109,7 @@ type UnimplementedExchangeServer struct {
 func (UnimplementedExchangeServer) Authenticate(context.Context, *Identity) (*Token, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Authenticate not implemented")
 }
-func (UnimplementedExchangeServer) Consume(*empty.Empty, Exchange_ConsumeServer) error {
+func (UnimplementedExchangeServer) Consume(*ConsumeRequest, Exchange_ConsumeServer) error {
 	return status.Errorf(codes.Unimplemented, "method Consume not implemented")
 }
 func (UnimplementedExchangeServer) Publish(context.Context, *PublishRequest) (*PublishResponse, error) {
@@ -151,7 +150,7 @@ func _Exchange_Authenticate_Handler(srv interface{}, ctx context.Context, dec fu
 }
 
 func _Exchange_Consume_Handler(srv interface{}, stream grpc.ServerStream) error {
-	m := new(empty.Empty)
+	m := new(ConsumeRequest)
 	if err := stream.RecvMsg(m); err != nil {
 		return err
 	}
