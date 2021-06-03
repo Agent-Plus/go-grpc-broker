@@ -113,6 +113,12 @@ func (a *authentication) do(af authCaller) error {
 	return nil
 }
 
+func (a *authentication) reset() {
+	a.Lock()
+	a.token = ""
+	a.Unlock()
+}
+
 // Authenticate implements gRPC client Authentication method,
 // it sends given application id and secret to the server and on
 // success response keeps session token for the futher calls.
@@ -342,27 +348,42 @@ func (o *observer) serve(hd MessageHandlerFunc) Closer {
 
 			delivery, sid, err = o.calls(sid)
 			if err != nil {
+				if errors.Is(err, ErrUnauthenticated) ||
+					errors.Is(err, ErrServerUnavailable) {
+					o.cl.aa.reset()
+				}
+
 				o.serving.setFalse()
 				o.reconn <- rotatebit(state)
+
 				continue
 			}
 
 			o.serving.setTrue()
 
-		case msg, ok := <-delivery:
-			if !ok {
-				// channel was lost, try to reconnect
-				o.reconn <- 1
-				continue
-			}
+		//case msg, ok := <-delivery:
+		default:
+			if o.serving.isSet() {
+				msg, ok := <-delivery
+				if !ok {
+					// channel was lost, try to reconnect
+					o.serving.setFalse()
+					o.reconn <- 1
+					continue
+				}
 
-			hd(msg)
+				hd(msg)
+			}
 		}
 	}
 }
 
 func (o *observer) calls(sid string) (dlv <-chan *Message, id string, err error) {
-	if err = o.cl.aa.do(o.cl.api); err != nil {
+	o.cl.aa.Lock()
+	err = o.cl.aa.do(o.cl.api)
+	o.cl.aa.Unlock()
+
+	if err != nil {
 		return
 	}
 
