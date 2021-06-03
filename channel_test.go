@@ -410,6 +410,75 @@ func BenchmarkFanout_1000ch(b *testing.B) {
 	}
 }
 
+func TestPublishTagRouting(t *testing.T) {
+	// instatinate exchange
+	ex := New()
+
+	// tie from exchange channel
+	sub := NewChannel()
+	ex.AddChannel(sub)
+
+	var wg sync.WaitGroup
+
+	p2sub := func(ch *Channel, ping *int, tag string) {
+		// declare exclusive
+		sid, err := ch.Subscribe("foo", tag, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		msg := ch.Consume(sid)
+		defer func() {
+			ch.StopConsume(sid)
+			wg.Done()
+		}()
+
+		wg.Done()
+
+		for {
+			m := <-msg
+			*ping++
+
+			if string(m.Body) == "2" {
+				break
+			}
+		}
+	}
+
+	var pa, pb int
+
+	//t.Log("prepare consume")
+	wg.Add(2)
+	go p2sub(sub, &pa, "cha")
+	go p2sub(sub, &pb, "chb")
+	wg.Wait()
+
+	//t.Log("first push")
+	pub := NewChannel()
+	ex.AddChannel(pub)
+
+	wg.Add(2)
+	_, err := pub.Publish("foo", &api.Message{Body: []byte("1")}, []string{"cha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = pub.Publish("foo", &api.Message{Body: []byte("1")}, []string{"chb"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = pub.Publish("foo", &api.Message{Body: []byte("2")}, []string{"cha", "chb"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wg.Wait()
+
+	if pa != pb && pa != 2 {
+		t.Error("expected 2")
+	}
+}
+
 //func BenchmarkFanoutSliceStack(b *testing.B) {
 //	// predefine
 //	st := newSliceStore()

@@ -59,9 +59,11 @@ func (ch *Channel) Consume(id uuid.UUID) <-chan *api.Message {
 	if ok {
 		dlv.dlv = make(chan *api.Message)
 		dlv.ready.setTrue()
+
+		return dlv.dlv
 	}
 
-	return dlv.dlv
+	return nil
 }
 
 type publisher struct {
