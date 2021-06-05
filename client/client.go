@@ -63,6 +63,16 @@ func (ec *ExchangeClient) Dial(addr string) error {
 	return nil
 }
 
+func (ec *ExchangeClient) DialContext(ctx context.Context, target string, opts ...grpc.DialOption) error {
+	conn, err := grpc.DialContext(ctx, target, opts...)
+	if err != nil {
+		return err
+	}
+	ec.api = api.NewExchangeClient(conn)
+
+	return nil
+}
+
 func (ec *ExchangeClient) metadata() context.Context {
 	ctx := context.Background()
 
