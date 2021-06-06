@@ -285,10 +285,15 @@ func (ec *ExchangeClient) StartServe(hd MessageHandlerFunc, name, tag string, ex
 		topic:     name,
 		tag:       tag,
 		exclusive: exc,
-		cl:        ec,
+
+		cl:     ec,
+		hd:     hd,
+		reconn: make(chan int8),
 	}
 
-	go o.serve(hd)
+	go o.serve("")
+	o.reconn <- 1
+
 	return o
 }
 
@@ -311,9 +316,17 @@ type observer struct {
 	tag       string
 	exclusive bool
 
-	cl      *ExchangeClient
-	id      string
-	reconn  chan int8
+	// client connection
+	cl *ExchangeClient
+
+	// message handler
+	hd MessageHandlerFunc
+
+	// reconn is connection state, first bit is run/stop,
+	// next bits are attempts to reconnect to the server
+	reconn chan int8
+
+	// authorized, subscribed and comsuming
 	serving atomicBool
 }
 
@@ -325,65 +338,69 @@ func (o *observer) Close() {
 	o.reconn <- 0
 }
 
-func (o *observer) serve(hd MessageHandlerFunc) Closer {
+func (o *observer) serve(sid string) {
 	var (
 		err      error
-		sid      string
 		delivery <-chan *Message
 	)
 
-	o.reconn = make(chan int8, 1)
-	// write start bit
-	o.reconn <- 1
+	for {
+		state := <-o.reconn
 
-	defer func() {
-		o.serving.setFalse()
-		close(o.reconn)
-	}()
+		// stop signal
+		if (state & startBit) == 0 {
+			return
+		}
 
+		if (state & lastBit) != 0 {
+			// long wait
+			time.Sleep(300 * time.Second)
+		} else if ((state & (stateMask & ^startBit)) & firstBit) == firstBit {
+			// short wait
+			time.Sleep(10 * time.Second)
+		}
+
+		delivery, sid, err = o.calls(sid)
+		if err != nil {
+			if errors.Is(err, ErrUnauthenticated) ||
+				errors.Is(err, ErrServerUnavailable) {
+				o.cl.aa.reset()
+			}
+
+			o.serving.setFalse()
+			go func(st int8) { o.reconn <- st }(rotatebit(state))
+
+			continue
+		}
+
+		o.serving.setTrue()
+		go o.read(sid, delivery)
+
+		// stop this routine
+		return
+	}
+}
+
+func (o *observer) read(sid string, delivery <-chan *Message) {
 	for {
 		select {
 		case state := <-o.reconn:
+			// stop signal
 			if (state & startBit) == 0 {
-				return nil
+				return
 			}
 
-			if (state & lastBit) != 0 {
-				// long wait
-				time.Sleep(300 * time.Second)
-			} else if (state & (stateMask & ^startBit)) != 0 {
-				// short wait
-				time.Sleep(10 * time.Second)
-			}
-
-			delivery, sid, err = o.calls(sid)
-			if err != nil {
-				if errors.Is(err, ErrUnauthenticated) ||
-					errors.Is(err, ErrServerUnavailable) {
-					o.cl.aa.reset()
-				}
-
+		case msg, ok := <-delivery:
+			if !ok {
+				// channel was lost, try to reconnect
 				o.serving.setFalse()
-				o.reconn <- rotatebit(state)
+				go o.serve(sid)
+				o.reconn <- 1
 
-				continue
+				return
 			}
 
-			o.serving.setTrue()
-
-		//case msg, ok := <-delivery:
-		default:
-			if o.serving.isSet() {
-				msg, ok := <-delivery
-				if !ok {
-					// channel was lost, try to reconnect
-					o.serving.setFalse()
-					o.reconn <- 1
-					continue
-				}
-
-				hd(msg)
-			}
+			o.hd(msg)
 		}
 	}
 }
