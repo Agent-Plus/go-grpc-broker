@@ -146,11 +146,29 @@ func (ec *ExchangeClient) Authenticate(id, secret string) (err error) {
 	return nil
 }
 
+// Message represents data preset to be send or receive through gRPC api.Message
 type Message struct {
-	Body        []byte
+	// Body is any data
+	Body []byte
+
+	// ContentType describes the original Body data
 	ContentType string
-	Headers     Header
-	Id          string
+
+	// Headers contains message header fields.
+	Headers Header
+
+	// Id is message identifier
+	Id string
+}
+
+// Action returns the value of the header `rpc-action` if was set
+func (m *Message) Action() string {
+	return m.Headers.GetString(headerAction)
+}
+
+// Resource returns the value of the header `rpc-resource` if was set
+func (m *Message) Resource() string {
+	return m.Headers.GetString(headerResource)
 }
 
 type streamWorker struct {
