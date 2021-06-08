@@ -68,7 +68,7 @@ type ServeMux struct {
 	waitRPC  *rpcRegistry
 
 	NotFoundHandler Handler
-	PanicHandler    func(*Message, interface{})
+	PanicHandler    func(ResponseWriter, *Message, interface{})
 }
 
 type AuthOption struct {
@@ -140,7 +140,7 @@ func (m *ServeMux) Update(resource string, handle HandlerFunc, md ...Middleware)
 // ServeMessage routes given Message to the handler function according toe the Message.Action and Message.Resource.
 func (m *ServeMux) ServeMessage(w ResponseWriter, msg *Message) {
 	if m.PanicHandler != nil {
-		defer m.recv(msg)
+		defer m.recv(w, msg)
 	}
 
 	action, _ := msg.Headers.GetInt64(headerAction)
@@ -207,9 +207,9 @@ func (m *ServeMux) newResponse(msg *Message) *response {
 	return rr
 }
 
-func (m *ServeMux) recv(msg *Message) {
+func (m *ServeMux) recv(w ResponseWriter, msg *Message) {
 	if rcv := recover(); rcv != nil {
-		m.PanicHandler(msg, rcv)
+		m.PanicHandler(w, msg, rcv)
 	}
 }
 
