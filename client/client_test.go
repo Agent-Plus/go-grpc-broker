@@ -147,10 +147,9 @@ func TestConsumeAndPublish(t *testing.T) {
 		}
 	}()
 
-	pub.Publish("foo", Message{
-		Id:   "xyz",
-		Body: []byte("bar"),
-	}, nil)
+	m := NewMessage()
+	m.Id = "xyz"
+	pub.Publish("foo", m, nil)
 
 	wg.Wait()
 }
@@ -234,7 +233,7 @@ func TestConsumeAndPublishTags(t *testing.T) {
 			tags = []string{"route_a", "route_b"}
 		}
 
-		msg := Message{Headers: make(Header)}
+		msg := NewMessage()
 		msg.Headers.SetInt64("attempt", int64(i))
 
 		pub.Publish("foo", msg, tags)
@@ -267,9 +266,9 @@ func TestMuxTimeoutPublishAndResponse(t *testing.T) {
 		t.Error(err)
 	}
 
-	_, err = pub.PublishRequest("foo", Message{
-		Id: "123456",
-	}, nil)
+	m := NewMessage()
+	m.Id = "123456"
+	_, err = pub.PublishRequest("foo", m, nil)
 
 	if err == nil || !errors.Is(err, ErrTimeout) {
 		t.Error("required error on timeout, but got: ", err)
@@ -325,11 +324,11 @@ func TestMuxPublishAndResponse(t *testing.T) {
 
 	wg.Wait()
 
-	msg := Message{
-		Id:   "123456",
-		Body: []byte("ping"),
-	}
-	SetMessageActionGet(&msg, "ping")
+	msg := NewMessage()
+	msg.Id = "123456"
+	msg.Body = []byte("ping")
+
+	SetMessageActionGet(msg, "ping")
 	resp, err := pub.PublishRequest("foo-rpc", msg, nil)
 
 	if err != nil {

@@ -129,5 +129,5 @@ func (rr *response) SetBody(bd []byte) {
 }
 
 func (rr *response) Publish(topic string, tags []string) error {
-	return rr.mux.Publish(topic, *rr.msg, tags)
+	return rr.mux.Publish(topic, rr.msg, tags)
 }

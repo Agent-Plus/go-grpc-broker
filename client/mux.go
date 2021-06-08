@@ -174,7 +174,7 @@ func (m *ServeMux) StartServe(name, tag string, exc bool) Closer {
 	}, name, tag, exc)
 }
 
-func (m *ServeMux) PublishRequest(topic string, msg Message, tags []string) (*Message, error) {
+func (m *ServeMux) PublishRequest(topic string, msg *Message, tags []string) (*Message, error) {
 	delivery, stop, tmOut := m.waitRPC.add(msg.Id, time.Now().Add(m.daedline))
 	err := m.Publish(topic, msg, tags)
 	if err != nil {

@@ -161,6 +161,12 @@ type Message struct {
 	Id string
 }
 
+func NewMessage() *Message {
+	return &Message{
+		Headers: make(Header),
+	}
+}
+
 // Action returns the value of the header `rpc-action` if was set
 func (m *Message) Action() string {
 	return m.Headers.GetString(headerAction)
@@ -238,7 +244,7 @@ func readStrem(stream api.Exchange_ConsumeClient, worker *streamWorker) {
 	}
 }
 
-func (ec *ExchangeClient) Publish(topic string, msg Message, tags []string) error {
+func (ec *ExchangeClient) Publish(topic string, msg *Message, tags []string) error {
 	ec.aa.Lock()
 	err := ec.aa.do(ec.api)
 	ec.aa.Unlock()
