@@ -97,16 +97,27 @@ func setCancel(resp *rpcResponse, daedline time.Time) (func(), func() bool) {
 }
 
 type ResponseWriter interface {
+	// Header returns pointer to the reponse Message.Headers
 	Header() Header
-	SetId(string)
-	SetContentType(string)
+
+	// SetBody sets payload data to the reponse Message.Body
 	SetBody([]byte)
+
+	// SetError sets Message.Error flag `true`
+	SetError(bool)
+
+	// SetId sets identifier into the response message
+	SetId(string)
+
+	// Publish sends message
 	Publish(string, []string) error
 }
 
 type response struct {
 	mux *ServeMux
 	msg *Message
+
+	sent bool
 }
 
 func (rr *response) Header() Header {
@@ -120,8 +131,8 @@ func (rr *response) SetId(id string) {
 	rr.msg.Id = id
 }
 
-func (rr *response) SetContentType(ct string) {
-	rr.msg.ContentType = ct
+func (rr *response) SetError(v bool) {
+	rr.msg.Err = v
 }
 
 func (rr *response) SetBody(bd []byte) {

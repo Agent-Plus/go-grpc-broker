@@ -151,8 +151,9 @@ type Message struct {
 	// Body is any data
 	Body []byte
 
-	// ContentType describes the original Body data
-	ContentType string
+	// Error is state to notify consumer that message is abnormal
+	// and he must react in different way on its
+	Err bool
 
 	// Headers contains message header fields.
 	Headers Header
@@ -221,15 +222,13 @@ func readStrem(stream api.Exchange_ConsumeClient, worker *streamWorker) {
 			}
 
 			m := &Message{
-				ContentType: msg.ContentType,
-				Id:          msg.Id,
+				Err: msg.Error,
+				Id:  msg.Id,
 			}
 
 			if ln := len(msg.Body); ln > 0 {
 				m.Body = make([]byte, ln)
 				copy(m.Body, msg.Body)
-			} else {
-				m.ContentType = ""
 			}
 
 			if ln := len(msg.Headers); ln > 0 {
@@ -256,15 +255,13 @@ func (ec *ExchangeClient) Publish(topic string, msg *Message, tags []string) err
 	ctx := ec.metadata()
 
 	m := &api.Message{
-		ContentType: msg.ContentType,
-		Id:          msg.Id,
+		Error: msg.Err,
+		Id:    msg.Id,
 	}
 
 	if ln := len(msg.Body); ln > 0 {
 		m.Body = make([]byte, ln)
 		copy(m.Body, msg.Body)
-	} else {
-		m.ContentType = ""
 	}
 
 	if ln := len(msg.Headers); ln > 0 {
