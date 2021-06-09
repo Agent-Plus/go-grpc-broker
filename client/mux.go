@@ -150,8 +150,11 @@ func (m *ServeMux) ServeMessage(w ResponseWriter, msg *Message) {
 	if ActionType(action) == actionNoop {
 		if len(corid) > 0 {
 			if resp := m.waitRPC.get(corid); resp != nil {
-				go resp.serve(msg)
+				resp.serve(msg)
+				return
 			}
+		} else {
+			// panic(fmt.Errorf("message action=(noop), correlation id: %w", ErrRequired))
 		}
 	} else {
 		if n, ok := m.trees[ActionType(action)]; ok {
