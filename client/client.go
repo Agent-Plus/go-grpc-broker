@@ -208,6 +208,8 @@ func (ec *ExchangeClient) Consume(id string) (<-chan *Message, error) {
 	return resp, nil
 }
 
+const headerValuesDelimitger = ";;"
+
 func readStrem(stream api.Exchange_ConsumeClient, worker *streamWorker) {
 	for {
 		select {
@@ -234,7 +236,7 @@ func readStrem(stream api.Exchange_ConsumeClient, worker *streamWorker) {
 			if ln := len(msg.Headers); ln > 0 {
 				m.Headers = make(Header, ln)
 				for k, v := range msg.Headers {
-					m.Headers[k] = strings.Split(v, ",")
+					m.Headers[k] = strings.Split(v, headerValuesDelimitger)
 				}
 			}
 
@@ -267,7 +269,7 @@ func (ec *ExchangeClient) Publish(topic string, msg *Message, tags []string) err
 	if ln := len(msg.Headers); ln > 0 {
 		m.Headers = make(map[string]string, ln)
 		for k, v := range msg.Headers {
-			m.Headers[k] = strings.Join(v, ",")
+			m.Headers[k] = strings.Join(v, headerValuesDelimitger)
 		}
 	}
 
