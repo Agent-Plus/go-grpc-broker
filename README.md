@@ -9,7 +9,7 @@ RPC mode is designed to run function on the remote service and wait the result. 
                   +-------------+
                   |Exchange     |
                   ++-----------++
-           -----> | TopicA      | ------->
+           -----> | Topic A     | ------->
 Publisher         | (exclusive) |         Subscriber
            <----- |             | <-------
                   ++-----------++
@@ -190,6 +190,7 @@ Start Sender B
 
 ```
 go run . -guid GUID
+```
 
 ### Fanout mode
 Fanout mode idea is to deliver to all subscribers of the topic mentioned by the producer without acknowledgement warranty.
