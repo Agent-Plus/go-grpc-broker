@@ -103,6 +103,94 @@ Start Sender B
 go run . -guid GUID
 ```
 
+Besides this one wants to pay attention on the client extension which helps to realize well known http handler style
+
+```
+package main
+
+import (
+    cbr "github.com/Agent-Plus/go-grpc-broker/client"
+
+    "flag"
+    "fmt"
+    "strconv"
+    "time"
+)
+
+var (
+    guid = flag.String("guid", "", "client identifier")
+    ping = flag.Bool("ping", false, "start ping request")
+)
+
+func main() {
+    flag.Parse()
+
+    cli := cbr.NewServeMux(cbr.New(cbr.WithAuthentication(*guid, "secret")))
+    if err := cli.Dial("127.0.0.1:8090"); err != nil {
+        panic(err)
+    }
+
+    cc := cli.StartServe("foo-ping", "", true)
+    defer cc.Close()
+
+    if *ping {
+        // sender mode
+        go func() {
+            for {
+                timer := time.NewTimer(1 * time.Second)
+                select {
+                case <-timer.C:
+                    msg := cbr.NewMessage()
+                    // set message header that points action type for the resource
+                    cbr.SetMessageActionGet(msg, "ping/pong")
+                    // message must have id
+                    msg.Id = strconv.FormatInt(time.Now().Unix(), 10)
+                    msg.Body = []byte("ping")
+
+                    if res, err := cli.PublishRequest("foo-ping", msg, nil); err == nil {
+                        fmt.Println("sent ping with id", msg.Id, "received response: ", res.Id)
+                    } else {
+                        fmt.Println(err, ", retry at 1 sec")
+                    }
+                }
+                timer.Stop()
+            }
+        }()
+    } else {
+        // receive/response mode
+        cli.Get("ping/pong", cbr.HandlerFunc(
+            func(w cbr.ResponseWriter, msg *cbr.Message) {
+                time.Sleep(1 * time.Second)
+                id := strconv.FormatInt(time.Now().Unix(), 10)
+                w.SetId(id)
+                fmt.Println("received: ", msg.Id, ", send: ", id)
+
+                if string(msg.Body) == "ping" {
+                    w.SetBody([]byte("pong"))
+                }
+
+                if err := w.Publish("foo-ping", nil); err != nil {
+                    panic(err)
+                }
+            }))
+    }
+
+    stop := make(chan struct{})
+    <-stop
+}
+```
+
+Start Sender A
+
+```
+go run . -ping -guid GUID
+```
+
+Start Sender B
+
+```
+go run . -guid GUID
+
 ### Fanout mode
 Fanout mode idea is to deliver to all subscribers of the topic mentioned by the producer without acknowledgement warranty.
 
