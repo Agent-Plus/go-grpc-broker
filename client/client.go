@@ -382,7 +382,7 @@ func (o *observer) serve(sid string) {
 		if (state & lastBit) != 0 {
 			// long wait
 			time.Sleep(300 * time.Second)
-		} else if ((state & (stateMask & ^startBit)) & firstBit) == firstBit {
+		} else if (state & (stateMask & ^startBit)) != 0 {
 			// short wait
 			time.Sleep(10 * time.Second)
 		}
