@@ -51,8 +51,12 @@ func New(opt ...ClientOption) *ExchangeClient {
 	return c
 }
 
-func (ec *ExchangeClient) Dial(addr string) error {
-	conn, err := grpc.Dial(addr, grpc.WithInsecure())
+func (ec *ExchangeClient) Dial(addr string, opt ...grpc.DialOption) error {
+	opts := make([]grpc.DialOption, 1, len(opt)+1)
+	opts[0] = grpc.WithInsecure()
+	opts = append(opts, opt...)
+
+	conn, err := grpc.Dial(addr, opts...)
 	if err != nil {
 		return err
 	}
