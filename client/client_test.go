@@ -301,7 +301,7 @@ func TestMuxPublishAndResponse(t *testing.T) {
 
 		w.SetId("123457")
 		w.SetBody([]byte("pong"))
-		w.Publish("foo-rpc", nil)
+		w.PublishResponse()
 	}))
 
 	sc := sub.StartServe("foo-rpc", "", true)

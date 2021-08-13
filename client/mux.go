@@ -171,10 +171,10 @@ func (m *ServeMux) ServeMessage(w ResponseWriter, msg *Message) {
 	}
 }
 
-func (m *ServeMux) StartServe(name, tag string, exc bool) Closer {
+func (m *ServeMux) StartServe(topic, tag string, exc bool) Closer {
 	return m.ExchangeClient.StartServe(func(msg *Message) {
-		m.ServeMessage(m.newResponse(msg), msg)
-	}, name, tag, exc)
+		m.ServeMessage(m.newResponse(topic, msg), msg)
+	}, topic, tag, exc)
 }
 
 func (m *ServeMux) PublishRequest(topic string, msg *Message, tags []string) (*Message, error) {
@@ -197,8 +197,9 @@ func (m *ServeMux) PublishRequest(topic string, msg *Message, tags []string) (*M
 	return rmsg, nil
 }
 
-func (m *ServeMux) newResponse(msg *Message) *response {
+func (m *ServeMux) newResponse(topic string, msg *Message) *response {
 	rr := new(response)
+	rr.topic = topic
 	rr.mux = m
 	rr.msg = &Message{
 		Headers: make(Header),

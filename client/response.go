@@ -109,15 +109,18 @@ type ResponseWriter interface {
 	// SetId sets identifier into the response message
 	SetId(string)
 
-	// Publish sends message
-	Publish(string, []string) error
+	// Publish implements ExchangeClient.Publish
+	Publish(string, *Message, []string) error
+
+	// PublishResponse sends *Message to the topic where request was received
+	PublishResponse() error
 }
 
 type response struct {
-	mux *ServeMux
-	msg *Message
-
-	sent bool
+	mux   *ServeMux
+	msg   *Message
+	topic string
+	sent  bool
 }
 
 func (rr *response) Header() Header {
@@ -139,6 +142,13 @@ func (rr *response) SetBody(bd []byte) {
 	rr.msg.Body = bd
 }
 
-func (rr *response) Publish(topic string, tags []string) error {
-	return rr.mux.Publish(topic, rr.msg, tags)
+// Publish implements ExchangeClient Publish method to make ResponseWriter
+// in the HandlerFunc more flexible, it's posible to publish any message into any topic.
+func (rr *response) Publish(topic string, msg *Message, tags []string) error {
+	return rr.mux.Publish(topic, msg, tags)
+}
+
+// PublishResponse responses with prepared message to the publisher topic
+func (rr *response) PublishResponse() error {
+	return rr.mux.Publish(rr.topic, rr.msg, nil)
 }
