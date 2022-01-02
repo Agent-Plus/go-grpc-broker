@@ -44,14 +44,12 @@ func (tp *topic) send(ctx context.Context, pb *publisher) error {
 			continue
 		}
 
-		// skip self receiver for the exclusive topic
-		if tp.exclusive {
-			if uuid.Equal(d.chId, pb.channel.token) {
-				continue
-			}
-
+		// skip self receiver
+		if uuid.Equal(d.chId, pb.channel.token) {
+			continue
 		}
 
+		// exclude those are not in the passed tags list
 		if len(pb.tags) > 0 && !d.isTag(pb.tags) {
 			continue
 		}
