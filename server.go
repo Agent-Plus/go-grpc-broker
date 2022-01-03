@@ -210,7 +210,7 @@ func (m *ExchangeServer) Subscribe(ctx context.Context, sb *api.SubscribeRequest
 
 	var mode modeType
 	if sb.Exclusive {
-		mode = RPCMode
+		mode = (RPCMode | ExclusiveMode)
 	}
 
 	id, err := ch.Subscribe(sb.Name, sb.Tag, mode)

@@ -21,31 +21,36 @@ func TestFanoutMessages(t *testing.T) {
 
 	var cnt int32
 
-	wg.Add(10)
 	for i := 0; i < 10; i++ {
 		// tie from exchange channel
-		ch := NewChannel()
-		ex.AddChannel(ch)
+		fn := func() func() {
+			ch := NewChannel()
+			ex.AddChannel(ch)
 
-		// subscribe receiver
-		id, err := ch.Subscribe("foo", "", 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		go func(ch *Channel, id uuid.UUID) {
-			msg := ch.Consume(id)
-			defer ch.StopConsume(id)
-
-			for {
-				<-msg
-
-				atomic.AddInt32(&cnt, 1)
-				break
+			// subscribe receiver
+			id, err := ch.Subscribe("foo", "", 0)
+			if err != nil {
+				t.Fatal(err)
 			}
 
-			wg.Done()
-		}(ch, id)
+			msg := ch.Consume(id)
+			wg.Add(1)
+
+			return func() {
+				defer func() {
+					ch.StopConsume(id)
+					wg.Done()
+				}()
+
+				for {
+					<-msg
+					atomic.AddInt32(&cnt, 1)
+					return
+				}
+			}
+		}()
+
+		go fn()
 	}
 
 	// tie from exchange channel
@@ -410,9 +415,12 @@ func TestPublishTagRouting(t *testing.T) {
 	// instatinate exchange
 	ex := New()
 
+	cha := NewChannel()
+	ex.AddChannel(cha)
+
 	// tie from exchange channel
-	sub := NewChannel()
-	ex.AddChannel(sub)
+	chb := NewChannel()
+	ex.AddChannel(chb)
 
 	var wg sync.WaitGroup
 
@@ -445,8 +453,8 @@ func TestPublishTagRouting(t *testing.T) {
 
 	//t.Log("prepare consume")
 	wg.Add(2)
-	go p2sub(sub, &pa, "cha")
-	go p2sub(sub, &pb, "chb")
+	go p2sub(cha, &pa, "cha")
+	go p2sub(chb, &pb, "chb")
 	wg.Wait()
 
 	//t.Log("first push")

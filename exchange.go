@@ -145,7 +145,8 @@ func (ex *Exchange) send(ctx context.Context, pb *publisher) error {
 		return ErrUnknonwTopic
 	}
 
-	if tp.exclusive {
+	// While topic is in the exclusiv mode than publisher must be consumer too
+	if (tp.mode & ExclusiveMode) != 0 {
 		fnd := 0
 
 		tp.dlv.Lock()
@@ -169,7 +170,7 @@ func (ex *Exchange) send(ctx context.Context, pb *publisher) error {
 	err := tp.send(ctx, pb)
 	tp.dlv.Unlock()
 
-	if err == nil && tp.exclusive && pb.ack == 0 {
+	if err == nil && (tp.mode&(RPCMode|ExclusiveMode)) != 0 && pb.ack == 0 {
 		err = ErrPublishExclusiveNotConsumed
 	}
 

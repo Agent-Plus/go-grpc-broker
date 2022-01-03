@@ -94,7 +94,6 @@ func (tp *topic) send(ctx context.Context, pb *publisher) error {
 		} else {
 			pb.ack++
 		}
-
 	}
 
 	if errStack != nil && len(errStack.err) > 0 {
