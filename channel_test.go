@@ -210,32 +210,68 @@ func TestSubscriptionLimit(t *testing.T) {
 	}
 }
 
-func TestExclusiveConsumingError(t *testing.T) {
+func TestConsumingError(t *testing.T) {
+	type args struct {
+		mode  modeType
+		topic string
+	}
+	tests := []struct {
+		name    string
+		args    args
+		gotErr  error
+		wantErr bool
+	}{
+		{
+			name: "RPC mode, no consumer",
+			args: args{
+				mode:  RPCMode,
+				topic: "rpc-topic",
+			},
+			gotErr:  ErrPublishExclusiveNotConsumed,
+			wantErr: true,
+		},
+		{
+			name: "Exclusive mode, no consumer",
+			args: args{
+				mode:  RPCMode | ExclusiveMode,
+				topic: "exclusive-topic",
+			},
+			gotErr:  ErrPublishExclusiveNotConsumed,
+			wantErr: true,
+		},
+	}
+
 	// instatinate exchange
 	ex := New()
 
-	// channel A
-	cha := NewChannel()
-	ex.AddChannel(cha)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// channel A
+			cha := NewChannel()
+			ex.AddChannel(cha)
 
-	// declare exclusive
-	if _, err := cha.Subscribe("foo", "", (RPCMode | ExclusiveMode)); err != nil {
-		t.Fatal(err)
-	}
-	// channel A will not pull data
+			// declare exclusive
+			if _, err := cha.Subscribe(tt.args.topic, "", tt.args.mode); err != nil {
+				t.Fatal(err)
+			}
+			// channel A will not pull data
 
-	// channel B
-	chb := NewChannel()
-	ex.AddChannel(chb)
+			// channel B
+			chb := NewChannel()
+			ex.AddChannel(chb)
 
-	if _, err := chb.Subscribe("foo", "", (RPCMode | ExclusiveMode)); err != nil {
-		t.Fatal(err)
-	}
+			if (tt.args.mode & ExclusiveMode) != 0 {
+				if _, err := chb.Subscribe(tt.args.topic, "", tt.args.mode); err != nil {
+					t.Fatal(err)
+				}
+			}
 
-	_, err := chb.Publish("foo", &api.Message{}, nil)
+			_, err := chb.Publish(tt.args.topic, &api.Message{}, nil)
 
-	if err != ErrPublishExclusiveNotConsumed {
-		t.Errorf("expected error: %v, but got: %v", ErrPublishExclusiveNotConsumed, err)
+			if err != tt.gotErr {
+				t.Errorf("Publish(), want error: %v, error: %v", ErrPublishExclusiveNotConsumed, err)
+			}
+		})
 	}
 }
 
