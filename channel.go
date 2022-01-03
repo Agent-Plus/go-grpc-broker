@@ -22,8 +22,9 @@ func (b *atomicBool) setFalse()   { atomic.StoreInt32((*int32)(b), 0) }
 type Channel struct {
 	mutex sync.RWMutex
 
-	// channels pool to deliver messages
-	pool map[uuid.UUID]*delivery
+	// consumes represents the collection of the delivery properties
+	// where this channel is ssubscribed through Subscribe call.
+	consumes map[uuid.UUID]*delivery
 
 	// client identifier
 	cid string
@@ -44,16 +45,16 @@ type Channel struct {
 // NewChannel allocates new channel to keep communication.
 func NewChannel() *Channel {
 	return &Channel{
-		optTTL: 10 * time.Second,
-		pool:   make(map[uuid.UUID]*delivery),
+		optTTL:   10 * time.Second,
+		consumes: make(map[uuid.UUID]*delivery),
 	}
 }
 
-// Consume returns delivering messages channel.
-// Receiver must range over the chan to pull all messages.
+// Consumes creates channel to pull messages from the subscription,
+// given id is the subscription identifier made by Subscribe call.
 func (ch *Channel) Consume(id uuid.UUID) <-chan *api.Message {
 	ch.mutex.Lock()
-	dlv, ok := ch.pool[id]
+	dlv, ok := ch.consumes[id]
 	ch.mutex.Unlock()
 
 	if ok {
@@ -113,7 +114,7 @@ func (ch *Channel) StopConsume(id uuid.UUID) {
 }
 
 func (ch *Channel) closeConsume(id uuid.UUID) {
-	if dlv, ok := ch.pool[id]; ok && dlv.ready.isSet() {
+	if dlv, ok := ch.consumes[id]; ok && dlv.ready.isSet() {
 		dlv.ready.setFalse()
 		close(dlv.dlv)
 	}
@@ -126,12 +127,12 @@ func (ch *Channel) closeConsume(id uuid.UUID) {
 // - (true) RPC, topic must have only two members to exchange with messages.
 // Subscribed channel can receive messages just mark with tag, this is additional filter
 // in the topic group.
-func (ch *Channel) Subscribe(name, tag string, exc bool) (uuid.UUID, error) {
+func (ch *Channel) Subscribe(name, tag string, mode modeType) (uuid.UUID, error) {
 	if ch.ex == nil {
 		return uuid.UUID{}, ErrStandAloneChannel
 	}
 
-	return ch.ex.subscribe(ch, name, tag, exc)
+	return ch.ex.subscribe(ch, name, tag, mode)
 }
 
 func (ch *Channel) Token() string {

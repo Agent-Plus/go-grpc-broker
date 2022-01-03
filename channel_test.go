@@ -21,14 +21,14 @@ func TestFanoutMessages(t *testing.T) {
 
 	var cnt int32
 
-	// tie from exchange channel
-	ch := NewChannel()
-	ex.AddChannel(ch)
-
 	wg.Add(10)
 	for i := 0; i < 10; i++ {
+		// tie from exchange channel
+		ch := NewChannel()
+		ex.AddChannel(ch)
+
 		// subscribe receiver
-		id, err := ch.Subscribe("foo", "", false)
+		id, err := ch.Subscribe("foo", "", 0)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -36,7 +36,6 @@ func TestFanoutMessages(t *testing.T) {
 		go func(ch *Channel, id uuid.UUID) {
 			msg := ch.Consume(id)
 			defer ch.StopConsume(id)
-			wg.Done()
 
 			for {
 				<-msg
@@ -49,13 +48,10 @@ func TestFanoutMessages(t *testing.T) {
 		}(ch, id)
 	}
 
-	wg.Wait()
-
 	// tie from exchange channel
 	pub := NewChannel()
 	ex.AddChannel(pub)
 
-	wg.Add(10)
 	_, err := pub.Publish("foo", &api.Message{}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -82,7 +78,7 @@ func TestFanoutCircuitNonBreaking(t *testing.T) {
 			ex.AddChannel(ch)
 
 			// subscribe receiver
-			id, err := ch.Subscribe("foo", "", false)
+			id, err := ch.Subscribe("foo", "", 0)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -145,26 +141,26 @@ func TestExclusiveSubscriptionLimit(t *testing.T) {
 	cha := NewChannel()
 	ex.AddChannel(cha)
 	// declasre exclusive
-	if _, err := cha.Subscribe("foo", "", true); err != nil {
-		t.Error(err)
+	if _, err := cha.Subscribe("foo", "", (RPCMode | ExclusiveMode)); err != nil {
+		t.Errorf("consumer A: %v", err)
 	}
 
 	// channel B
 	chb := NewChannel()
 	ex.AddChannel(chb)
 	// declare exclusive
-	if _, err := chb.Subscribe("foo", "", true); err != nil {
-		t.Error(err)
+	if _, err := chb.Subscribe("foo", "", (RPCMode | ExclusiveMode)); err != nil {
+		t.Errorf("consumer B: %v", err)
 	}
 
 	// one more
 	chc := NewChannel()
 	ex.AddChannel(chc)
 	// declare exclusive
-	_, err := chc.Subscribe("foo", "", true)
+	_, err := chc.Subscribe("foo", "", (RPCMode | ExclusiveMode))
 
-	if err != ErrSubscribeExclusiveFull {
-		t.Error("expected error:", ErrSubscribeExclusiveFull, ", got:", err)
+	if err != ErrSubscribeRCPFull {
+		t.Error("expected error:", ErrSubscribeRCPFull, ", got:", err)
 	}
 }
 
@@ -177,7 +173,7 @@ func TestRPCNotpullingConsumers(t *testing.T) {
 	ex.AddChannel(cha)
 
 	// declare exclusive
-	if _, err := cha.Subscribe("foo", "", true); err != nil {
+	if _, err := cha.Subscribe("foo", "", (RPCMode | ExclusiveMode)); err != nil {
 		t.Fatal(err)
 	}
 	// channel A will not pull data
@@ -186,7 +182,7 @@ func TestRPCNotpullingConsumers(t *testing.T) {
 	chb := NewChannel()
 	ex.AddChannel(chb)
 
-	if _, err := chb.Subscribe("foo", "", true); err != nil {
+	if _, err := chb.Subscribe("foo", "", (RPCMode | ExclusiveMode)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -205,7 +201,7 @@ func TestRPCWithWaitTimeoutError(t *testing.T) {
 	cha := NewChannel()
 	ex.AddChannel(cha)
 	// declasre exclusive
-	sid, err := cha.Subscribe("foo", "", true)
+	sid, err := cha.Subscribe("foo", "", (RPCMode | ExclusiveMode))
 	if err != nil {
 		t.Error(err)
 	}
@@ -257,7 +253,7 @@ func TestRPCUnsubscribedPublishError(t *testing.T) {
 	ex.AddChannel(cha)
 
 	// declare exclusive
-	sid, err := cha.Subscribe("foo", "", true)
+	sid, err := cha.Subscribe("foo", "", (RPCMode | ExclusiveMode))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +290,7 @@ func TestExchlusiveChannelDialog(t *testing.T) {
 
 	p2p := func(ch *Channel, ping *int, who string) {
 		// declare exclusive
-		sid, err := ch.Subscribe("foo-ping-rpc", "", true)
+		sid, err := ch.Subscribe("foo-ping-rpc", "", (RPCMode | ExclusiveMode))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -375,7 +371,7 @@ func BenchmarkFanout_1000ch(b *testing.B) {
 		go func(ch *Channel, i int) {
 
 			// declare exclusive
-			sid, err := ch.Subscribe("foo-bench", "", false)
+			sid, err := ch.Subscribe("foo-bench", "", 0)
 			if err != nil {
 				b.Fatal(err)
 			}
@@ -422,7 +418,7 @@ func TestPublishTagRouting(t *testing.T) {
 
 	p2sub := func(ch *Channel, ping *int, tag string) {
 		// declare exclusive
-		sid, err := ch.Subscribe("foo", tag, false)
+		sid, err := ch.Subscribe("foo", tag, 0)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -208,7 +208,12 @@ func (m *ExchangeServer) Subscribe(ctx context.Context, sb *api.SubscribeRequest
 		return nil, status.Error(codes.Unauthenticated, err.Error())
 	}
 
-	id, err := ch.Subscribe(sb.Name, sb.Tag, sb.Exclusive)
+	var mode modeType
+	if sb.Exclusive {
+		mode = RPCMode
+	}
+
+	id, err := ch.Subscribe(sb.Name, sb.Tag, mode)
 	if err != nil {
 		return nil, err
 	}

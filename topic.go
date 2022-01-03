@@ -9,6 +9,20 @@ import (
 	uuid "github.com/satori/go.uuid"
 )
 
+// modeType describes subscription type
+type modeType uint8
+
+// Fanout is default subscription mode where each consumer recieves message
+const FanoutMode modeType = 0
+
+const (
+	// RPCMode is subscription where in the topic is one consumer and many publishers
+	RPCMode modeType = 1 << iota
+
+	// ExclusiveMode is RPC where conversation one to one
+	ExclusiveMode
+)
+
 // topic represents container, where each subscriber will receive message sent by publisher.
 // topic keeps modes: fanout or exclusive. The fanout mode push to each
 // receiver except publisher. The exclusive mode means one-to-one communication like RPC.
@@ -20,6 +34,8 @@ type topic struct {
 
 	// topic is exclusive to use as RPC
 	exclusive bool
+
+	mode modeType
 
 	// topic name
 	name string
@@ -40,11 +56,11 @@ func (tp *topic) send(ctx context.Context, pb *publisher) error {
 
 	for _, d := range tp.dlv.registry {
 		if !d.ready.isSet() {
-			// delivery container is not pulled
+			// delivery container is not ready to consume messages
 			continue
 		}
 
-		// skip self receiver
+		// skip self
 		if uuid.Equal(d.chId, pb.channel.token) {
 			continue
 		}
@@ -104,29 +120,26 @@ func (s *subscriptions) topic(name string) *topic {
 	return tp
 }
 
-func (s *subscriptions) subscribe(ch *Channel, name, tag string, exc bool) (uuid.UUID, error) {
+func (s *subscriptions) subscribe(ch *Channel, name, tag string, mode modeType) (uuid.UUID, error) {
 	tp := s.topic(name)
 
 	if tp == nil {
 		tp = &topic{
-			dlv:       newDeliveryStore(),
-			exclusive: exc,
-			name:      name,
-			ttl:       10 * time.Millisecond,
+			dlv:  newDeliveryStore(),
+			mode: mode,
+			name: name,
+			ttl:  10 * time.Millisecond,
 		}
 
 		s.Lock()
 		s.subsr[name] = tp
 		s.Unlock()
-	}
-
-	// exclusive topic means only two subscribers to communicate,
-	// topic is RPC bus
-	if tp.exclusive {
+	} else {
 		cnt := 0
 		tp.dlv.Lock()
 		for _, d := range tp.dlv.registry {
-			if _, ok := ch.pool[d.id]; ok {
+			// already subscribed and can consume topic messages
+			if _, ok := ch.consumes[d.id]; ok {
 				tp.dlv.Unlock()
 				return d.id, nil
 			}
@@ -135,10 +148,11 @@ func (s *subscriptions) subscribe(ch *Channel, name, tag string, exc bool) (uuid
 		}
 		tp.dlv.Unlock()
 
-		if cnt < 2 {
-			// ok
-		} else {
-			return uuid.UUID{}, ErrSubscribeExclusiveFull
+		// RPC flags are set
+		if cnt > 0 && (tp.mode&(RPCMode|ExclusiveMode)) == RPCMode {
+			return uuid.UUID{}, ErrSubscribeRCPFull
+		} else if cnt > 1 && (tp.mode&ExclusiveMode) != 0 {
+			return uuid.UUID{}, ErrSubscribeRCPFull
 		}
 	}
 
@@ -150,12 +164,13 @@ func (s *subscriptions) subscribe(ch *Channel, name, tag string, exc bool) (uuid
 		tag:    tag,
 	}
 
-	// add to channel pool of the delivery
+	// Add meta data to the channel about prepared subscription,
+	// this information is short step to start consume.
 	ch.mutex.Lock()
-	ch.pool[dlv.id] = dlv
+	ch.consumes[dlv.id] = dlv
 	ch.mutex.Unlock()
 
-	// add to the topic delivery registry
+	// Append to the topic registry prepared consumer
 	tp.dlv.Lock()
 	tp.dlv.add(dlv)
 	tp.dlv.Unlock()

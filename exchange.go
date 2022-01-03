@@ -19,8 +19,8 @@ var (
 	// to the exclusive channel without subscription to its
 	ErrNotSubscribedExclusive = errors.New("not subscribed to exclusive")
 
-	// ErrSubscribeRPCFull is raised to reject more than two subscriptions to the exclusive channel
-	ErrSubscribeExclusiveFull = errors.New("exclusive topic is full")
+	// ErrSubscribeRPCFull is raised to reject new subscription when topic has one or more than two
+	ErrSubscribeRCPFull = errors.New("exclusive topic is full")
 
 	// ErrPublishExclusiveNotConsumed is raised on `Publish` to exclusive topic where topic hasn't receiver
 	ErrPublishExclusiveNotConsumed = errors.New("exclusive topic not consumed")
@@ -106,12 +106,12 @@ func (ex *Exchange) CloseChannel(id uuid.UUID) {
 
 	// gather all topics where channel is subscribed.
 	// drop read
-	tps := make([]string, 0, len(ch.pool))
-	for id, d := range ch.pool {
+	tps := make([]string, 0, len(ch.consumes))
+	for id, d := range ch.consumes {
 		// drop ready
 		ch.closeConsume(id)
 		// delete object
-		delete(ch.pool, id)
+		delete(ch.consumes, id)
 		// store topic name
 		tps = append(tps, d.tpName)
 	}
