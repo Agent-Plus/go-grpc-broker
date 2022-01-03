@@ -50,7 +50,7 @@ func (tp *topic) send(ctx context.Context, pb *publisher) error {
 	tm.Stop()
 
 	var errStack *CircuitErrors
-	if !tp.exclusive {
+	if tp.mode&(RPCMode|ExclusiveMode) == 0 {
 		errStack = &CircuitErrors{}
 	}
 
@@ -75,7 +75,7 @@ func (tp *topic) send(ctx context.Context, pb *publisher) error {
 		tm.Stop()
 
 		if err != nil {
-			if tp.exclusive {
+			if tp.mode&(RPCMode|ExclusiveMode) != 0 {
 				return err
 			} else {
 				if ln, cp := len(errStack.err), cap(errStack.err); ln == cp {
