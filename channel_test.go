@@ -138,38 +138,79 @@ func TestFanoutCircuitNonBreaking(t *testing.T) {
 	}
 }
 
-func TestExclusiveSubscriptionLimit(t *testing.T) {
+func TestSubscriptionLimit(t *testing.T) {
+	type args struct {
+		mode  modeType
+		topic string
+	}
+	tests := []struct {
+		name    string
+		args    args
+		gotErr  error
+		wantErr bool
+	}{
+		{
+			name: "RPC mode with one pulling channel",
+			args: args{
+				mode:  RPCMode,
+				topic: "pull-me",
+			},
+			gotErr:  ErrSubscribeRCPFull,
+			wantErr: true,
+		},
+		{
+			name: "Exclusive mode with two pulling channels",
+			args: args{
+				mode:  RPCMode | ExclusiveMode,
+				topic: "exclusive-me",
+			},
+			gotErr:  ErrSubscribeRCPFull,
+			wantErr: true,
+		},
+	}
+
 	// instatinate exchange
 	ex := New()
 
-	// channel A
-	cha := NewChannel()
-	ex.AddChannel(cha)
-	// declasre exclusive
-	if _, err := cha.Subscribe("foo", "", (RPCMode | ExclusiveMode)); err != nil {
-		t.Errorf("consumer A: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// channel A
+			cha := NewChannel()
+			ex.AddChannel(cha)
+			// declasre exclusive
+			if _, err := cha.Subscribe(tt.args.topic, "", tt.args.mode); err != nil {
+				t.Errorf("consumer A: %v", err)
+			}
 
-	// channel B
-	chb := NewChannel()
-	ex.AddChannel(chb)
-	// declare exclusive
-	if _, err := chb.Subscribe("foo", "", (RPCMode | ExclusiveMode)); err != nil {
-		t.Errorf("consumer B: %v", err)
-	}
+			// channel B
+			chb := NewChannel()
+			ex.AddChannel(chb)
+			// declare exclusive
+			_, err := chb.Subscribe(tt.args.topic, "", tt.args.mode)
+			if (err != nil) != tt.wantErr && (tt.args.mode&ExclusiveMode) == 0 {
+				t.Errorf("Subscribe(), Channel B, err = %v, want error = %v", err, tt.wantErr)
+			}
 
-	// one more
-	chc := NewChannel()
-	ex.AddChannel(chc)
-	// declare exclusive
-	_, err := chc.Subscribe("foo", "", (RPCMode | ExclusiveMode))
+			if (tt.args.mode&ExclusiveMode) == 0 && err != tt.gotErr {
+				t.Errorf("Subscribe(), Channel B, err = %v, want error = %v", err, tt.gotErr)
+			}
 
-	if err != ErrSubscribeRCPFull {
-		t.Error("expected error:", ErrSubscribeRCPFull, ", got:", err)
+			// one more
+			if tt.args.mode&ExclusiveMode != 0 {
+				chc := NewChannel()
+				ex.AddChannel(chc)
+				// declare exclusive
+				_, err := chc.Subscribe(tt.args.topic, "", tt.args.mode)
+
+				if err != tt.gotErr {
+					t.Errorf("Subscribe(), Channel C, err = %v, want error = %v", err, tt.gotErr)
+				}
+			}
+		})
 	}
 }
 
-func TestRPCNotpullingConsumers(t *testing.T) {
+func TestExclusiveConsumingError(t *testing.T) {
 	// instatinate exchange
 	ex := New()
 
@@ -198,7 +239,7 @@ func TestRPCNotpullingConsumers(t *testing.T) {
 	}
 }
 
-func TestRPCWithWaitTimeoutError(t *testing.T) {
+func TestExclusiveTimeoutError(t *testing.T) {
 	// instatinate exchange
 	ex := New()
 
@@ -247,9 +288,8 @@ func TestRPCWithWaitTimeoutError(t *testing.T) {
 	}
 }
 
-// This case tests exclusive channel subscription for the both communicators:
 // publisher and consumer must be subscribed to one channel.
-func TestRPCUnsubscribedPublishError(t *testing.T) {
+func TestExclusivePublisherError_notSubscribed(t *testing.T) {
 	// instatinate exchange
 	ex := New()
 
