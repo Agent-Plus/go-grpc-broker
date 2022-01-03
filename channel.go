@@ -58,6 +58,11 @@ func (ch *Channel) Consume(id uuid.UUID) <-chan *api.Message {
 	ch.mutex.Unlock()
 
 	if ok {
+		// close previous
+		if dlv.ready.isSet() {
+			close(dlv.dlv)
+		}
+
 		dlv.dlv = make(chan *api.Message)
 		dlv.ready.setTrue()
 
