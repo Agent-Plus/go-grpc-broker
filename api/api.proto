@@ -25,6 +25,7 @@ message Message {
     bool error = 2;
     string id = 3;
     map<string, string> headers = 4;
+    string corId = 5;
 }
 
 message PublishRequest {
