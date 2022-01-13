@@ -8,7 +8,7 @@ import (
 
 	"github.com/Agent-Plus/go-grpc-broker/api"
 
-	uuid "github.com/satori/go.uuid"
+	uuid "github.com/google/uuid"
 )
 
 type atomicBool int32
@@ -40,6 +40,8 @@ type Channel struct {
 
 	// authorization token and identifier of the channel
 	token uuid.UUID
+
+	waiting *waitStore
 }
 
 // NewChannel allocates new channel to keep communication.
@@ -74,7 +76,7 @@ func (ch *Channel) Consume(id uuid.UUID) <-chan *api.Message {
 
 type publisher struct {
 	// acknowledgement counter, shows success writes to the topic channels
-	ack int
+	ack int32
 
 	// channel sender
 	channel *Channel
@@ -82,32 +84,86 @@ type publisher struct {
 	// message
 	request *api.Message
 
+	// response message in case wait flag in Publish call
+	response *api.Message
+
 	// tags
 	tags []string
 
 	// topic name
 	topic string
+
+	// wait reponse on published message
+	// exclusive topic drops this flag in false
+	wait atomicBool
+}
+
+func (pb *publisher) dest() {
+	pb.channel = nil
+	pb.request = nil
+	pb.response = nil
+}
+
+func (pb *publisher) recv(msg *api.Message) {
+	if msg != nil {
+		pb.response = msg
+	}
+	pb.wait.setFalse()
 }
 
 // Publish sends given message to the given topic
-func (ch *Channel) Publish(name string, msg *api.Message, tags []string) (int, error) {
+func (ch *Channel) Publish(name string, msg *api.Message, tags []string, wait bool) (int, *api.Message, error) {
 	// set daedline for the whole operation
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if ch.ex != nil {
-		pb := &publisher{
-			channel: ch,
-			request: msg,
-			tags:    tags,
-			topic:   name,
-		}
-		err := ch.ex.send(ctx, pb)
-
-		return pb.ack, err
+	if ch.ex == nil {
+		return 0, nil, ErrStandAloneChannel
 	}
 
-	return 0, ErrStandAloneChannel
+	if len(msg.Id) == 0 {
+		msg.Id = uuid.NewString()
+	}
+
+	if id := msg.CorId; ch.waiting != nil && len(id) > 0 {
+		ack := ch.waiting.do(id, msg)
+		return int(ack), nil, nil
+	}
+
+	pb := &publisher{
+		channel: ch,
+		request: msg,
+		tags:    tags,
+		topic:   name,
+	}
+	defer pb.dest()
+
+	if wait {
+		pb.wait.setTrue()
+	}
+
+	err := ch.ex.send(ctx, pb)
+	if err != nil {
+		return int(pb.ack), nil, err
+	}
+
+	err = waiting(ctx, pb)
+	return int(pb.ack), pb.response, err
+}
+
+func waiting(ctx context.Context, pb *publisher) error {
+	dn := ctx.Done()
+
+	for {
+		select {
+		case <-dn:
+			return ctx.Err()
+		default:
+			if !pb.wait.isSet() {
+				return nil
+			}
+		}
+	}
 }
 
 // StopConsume marks channel not ready to receive messages,
@@ -125,13 +181,11 @@ func (ch *Channel) closeConsume(id uuid.UUID) {
 	}
 }
 
-// Subscribe appends channel to the topic with given name. This action reasonable only in the Exchange collection scope,
-// which is provided only through the Exchange.NewChannel() allocation.
-// Subscriptions may be two types according given `exc` parameter:
-// - (default: false) fanout, when all members of the topic recieve message except sender;
-// - (true) RPC, topic must have only two members to exchange with messages.
-// Subscribed channel can receive messages just mark with tag, this is additional filter
-// in the topic group.
+// Subscribe appends channel to the topic with given name. This action reasonable
+// only in the Exchange collection scope and provides  through invoke Exchange.NewChannel().
+// Tag marks channel to receive messages published with only with given tag.
+// Mode declares new topic with given mode: topic in mode RPC or Exclusive can have only one consumer
+// to response on published message or consumed them silently
 func (ch *Channel) Subscribe(name, tag string, mode modeType) (uuid.UUID, error) {
 	if ch.ex == nil {
 		return uuid.UUID{}, ErrStandAloneChannel

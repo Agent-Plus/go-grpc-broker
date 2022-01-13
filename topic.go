@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
+	"sync/atomic"
 
-	uuid "github.com/satori/go.uuid"
+	uuid "github.com/google/uuid"
 )
 
 // modeType describes subscription type
@@ -24,80 +24,86 @@ const (
 )
 
 // topic represents container, where each subscriber will receive message sent by publisher.
-// topic keeps modes: fanout or exclusive. The fanout mode push to each
-// receiver except publisher. The exclusive mode means one-to-one communication like RPC.
+// topic keeps modes: fanout or rpc and/or exclusive. The fanout mode push to each
+// receiver except publisher. The rpc mode means one consumer.
 type topic struct {
+	// delivery registry
 	dlv *deliveryStore
 
 	// topic identifier
 	id uuid.UUID
 
-	// topic is exclusive to use as RPC
-	exclusive bool
-
+	// topic mode
 	mode modeType
 
 	// topic name
 	name string
-
-	// message time to live
-	ttl time.Duration
 }
 
-func (tp *topic) send(ctx context.Context, pb *publisher) error {
-	tm := time.NewTimer(tp.ttl)
-	// don't start immediately
-	tm.Stop()
+func (tp *topic) doFanout(ctx context.Context, pb *publisher) error {
+	// prepare pool with
+	dp := newDeliveryPool(4, 60, 20)
+	defer dp.Close()
+	// start pool hadnlers
+	dp.start()
 
-	var errStack *CircuitErrors
-	if tp.mode&(RPCMode|ExclusiveMode) == 0 {
-		errStack = &CircuitErrors{}
-	}
+	tp.dlv.walk(func(idx int, dlv *delivery) error {
+		dp.schedule(dp.wrapTask(ctx, pb, dlv))
+		return nil
+	}, &pb.channel.token, pb.tags)
 
-	for _, d := range tp.dlv.registry {
-		if !d.ready.isSet() {
-			// delivery container is not ready to consume messages
-			continue
-		}
+	dp.WaitWithContext(ctx)
+	return dp.Err()
+}
 
-		// skip self
-		if uuid.Equal(d.chId, pb.channel.token) {
-			continue
-		}
+func (tp *topic) doRPC(ctx context.Context, pb *publisher) error {
+	if (tp.mode & ExclusiveMode) != 0 {
+		var fnd bool
 
-		// exclude those are not in the passed tags list
-		if len(pb.tags) > 0 && !d.isTag(pb.tags) {
-			continue
-		}
-
-		tm.Reset(tp.ttl)
-		err := d.send(ctx, pb.request, tm.C)
-		tm.Stop()
-
-		if err != nil {
-			if tp.mode&(RPCMode|ExclusiveMode) != 0 {
-				return err
-			} else {
-				if ln, cp := len(errStack.err), cap(errStack.err); ln == cp {
-					buf := make([]error, ln, ln+5)
-					copy(buf, errStack.err)
-					errStack.err = buf
-				}
-
-				errStack.err = append(
-					errStack.err,
-					fmt.Errorf("topic=(%s): %w", tp.name, err),
-				)
-
-				// TODO: maybe for the fanout this case should raise StopConsume channel?..
+		pb.channel.mutex.Lock()
+		for _, dlv := range pb.channel.consumes {
+			if dlv.tpName == tp.name && dlv.ready.isSet() {
+				fnd = true
+				break
 			}
-		} else {
-			pb.ack++
+		}
+		pb.channel.mutex.Unlock()
+
+		if !fnd {
+			return fmt.Errorf("publish to exclusive topic=(%s), publisher: %w", tp.name, ErrChannelNotConsumed)
 		}
 	}
 
-	if errStack != nil && len(errStack.err) > 0 {
-		return errStack
+	return tp.dlv.walk(func(idx int, dlv *delivery) error {
+		wt := waitingChanStore(pb, dlv.chId, tp.mode)
+		if wt != nil {
+			wt.add(pb.request.Id, pb.recv)
+		}
+
+		err := dlv.send(ctx, pb.request, nil)
+		if err != nil && wt != nil {
+			wt.delete(pb.request.Id)
+		}
+		if err == nil {
+			atomic.AddInt32(&pb.ack, 1)
+		}
+
+		return err
+	}, &pb.channel.token, pb.tags)
+}
+
+func waitingChanStore(pb *publisher, chId uuid.UUID, tMode modeType) *waitStore {
+	if tMode&(RPCMode|ExclusiveMode) != RPCMode || !pb.wait.isSet() {
+		return nil
+	}
+
+	if ex := pb.channel.ex; ex != nil {
+		ex.channels.Lock()
+		defer ex.channels.Unlock()
+
+		if ch := ex.channels.channel(chId); ch != nil {
+			return ch.waiting
+		}
 	}
 
 	return nil
@@ -127,7 +133,6 @@ func (s *subscriptions) subscribe(ch *Channel, name, tag string, mode modeType) 
 			dlv:  newDeliveryStore(),
 			mode: mode,
 			name: name,
-			ttl:  10 * time.Millisecond,
 		}
 
 		s.Lock()
@@ -140,6 +145,11 @@ func (s *subscriptions) subscribe(ch *Channel, name, tag string, mode modeType) 
 			// already subscribed and can consume topic messages
 			if _, ok := ch.consumes[d.id]; ok {
 				tp.dlv.Unlock()
+
+				if mode != tp.mode {
+					return d.id, ErrChangeTopicMode
+				}
+
 				return d.id, nil
 			}
 
@@ -149,15 +159,15 @@ func (s *subscriptions) subscribe(ch *Channel, name, tag string, mode modeType) 
 
 		// RPC flags are set
 		if cnt > 0 && (tp.mode&(RPCMode|ExclusiveMode)) == RPCMode {
-			return uuid.UUID{}, ErrSubscribeRCPFull
+			return uuid.UUID{}, fmt.Errorf("topic=(%s), mode=(%d), has consumer: %w", tp.name, tp.mode, ErrSubscribeRejected)
 		} else if cnt > 1 && (tp.mode&ExclusiveMode) != 0 {
-			return uuid.UUID{}, ErrSubscribeRCPFull
+			return uuid.UUID{}, fmt.Errorf("topic=(%s), mode=(%d), has consumer: %w", tp.name, tp.mode, ErrSubscribeRejected)
 		}
 	}
 
 	// create delivery container
 	dlv := &delivery{
-		id:     uuid.NewV4(),
+		id:     uuid.New(),
 		chId:   ch.token,
 		tpName: name,
 		tag:    tag,
@@ -168,6 +178,10 @@ func (s *subscriptions) subscribe(ch *Channel, name, tag string, mode modeType) 
 	ch.mutex.Lock()
 	ch.consumes[dlv.id] = dlv
 	ch.mutex.Unlock()
+
+	if (tp.mode & (RPCMode | ExclusiveMode)) == RPCMode {
+		ch.waiting = newWaitStore()
+	}
 
 	// Append to the topic registry prepared consumer
 	tp.dlv.Lock()

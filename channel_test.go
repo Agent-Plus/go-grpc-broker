@@ -3,6 +3,8 @@ package broker
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -10,7 +12,7 @@ import (
 	"time"
 
 	"github.com/Agent-Plus/go-grpc-broker/api"
-	uuid "github.com/satori/go.uuid"
+	uuid "github.com/google/uuid"
 )
 
 func TestFanoutMessages(t *testing.T) {
@@ -57,7 +59,7 @@ func TestFanoutMessages(t *testing.T) {
 	pub := NewChannel()
 	ex.AddChannel(pub)
 
-	_, err := pub.Publish("foo", &api.Message{}, nil)
+	_, _, err := pub.Publish("foo", &api.Message{}, nil, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,47 +76,49 @@ func TestFanoutCircuitNonBreaking(t *testing.T) {
 	var tmmtx sync.Mutex
 	tmwbuf := make(map[string]int32)
 
-	var wg sync.WaitGroup
-
 	for i := 0; i < 11; i++ {
-		wg.Add(1)
-		go func(i int) {
+		wk := func(i int) func() {
 			ch := NewChannel()
 			ex.AddChannel(ch)
 
 			// subscribe receiver
 			id, err := ch.Subscribe("foo", "", 0)
 			if err != nil {
-				t.Fatal(err)
+				t.Fatalf("Subscribe(), error = %v", err)
 			}
-			defer ch.StopConsume(id)
 
 			msg := ch.Consume(id)
-			wg.Done()
 
-			if (i % 5) == 0 {
-				tmmtx.Lock()
-				tmwbuf[ch.Token()] = 0
-				tmmtx.Unlock()
-				for {
-				}
-			} else {
-				for {
-					<-msg
+			return func() {
+				defer ch.StopConsume(id)
+
+				if (i % 5) == 0 {
+					tmmtx.Lock()
+					tmwbuf[ch.Token()] = 0
+					tmmtx.Unlock()
+
+					// endless
+					for {
+					}
+				} else {
+					for {
+						<-msg
+					}
 				}
 			}
 		}(i)
-	}
 
-	wg.Wait()
+		go wk()
+	}
 
 	pb := NewChannel()
 	ex.AddChannel(pb)
 
 	for i := 0; i < 10; i++ {
-		ack, err := pb.Publish("foo", &api.Message{}, nil)
+		ack, _, err := pb.Publish("foo", &api.Message{}, nil, false)
 
 		if err != nil {
+			t.Log(i, ":", err)
 			if er, ok := err.(*CircuitErrors); ok {
 				tmmtx.Lock()
 				a, b := len(er.err), len(tmwbuf)
@@ -155,7 +159,7 @@ func TestSubscriptionLimit(t *testing.T) {
 				mode:  RPCMode,
 				topic: "pull-me",
 			},
-			gotErr:  ErrSubscribeRCPFull,
+			gotErr:  ErrSubscribeRejected,
 			wantErr: true,
 		},
 		{
@@ -164,7 +168,7 @@ func TestSubscriptionLimit(t *testing.T) {
 				mode:  RPCMode | ExclusiveMode,
 				topic: "exclusive-me",
 			},
-			gotErr:  ErrSubscribeRCPFull,
+			gotErr:  ErrSubscribeRejected,
 			wantErr: true,
 		},
 	}
@@ -191,7 +195,7 @@ func TestSubscriptionLimit(t *testing.T) {
 				t.Errorf("Subscribe(), Channel B, err = %v, want error = %v", err, tt.wantErr)
 			}
 
-			if (tt.args.mode&ExclusiveMode) == 0 && err != tt.gotErr {
+			if (tt.args.mode&ExclusiveMode) == 0 && !errors.Is(err, tt.gotErr) {
 				t.Errorf("Subscribe(), Channel B, err = %v, want error = %v", err, tt.gotErr)
 			}
 
@@ -202,7 +206,7 @@ func TestSubscriptionLimit(t *testing.T) {
 				// declare exclusive
 				_, err := chc.Subscribe(tt.args.topic, "", tt.args.mode)
 
-				if err != tt.gotErr {
+				if !errors.Is(err, tt.gotErr) {
 					t.Errorf("Subscribe(), Channel C, err = %v, want error = %v", err, tt.gotErr)
 				}
 			}
@@ -227,7 +231,7 @@ func TestConsumingError(t *testing.T) {
 				mode:  RPCMode,
 				topic: "rpc-topic",
 			},
-			gotErr:  ErrPublishExclusiveNotConsumed,
+			gotErr:  ErrChannelNotConsumed,
 			wantErr: true,
 		},
 		{
@@ -236,7 +240,7 @@ func TestConsumingError(t *testing.T) {
 				mode:  RPCMode | ExclusiveMode,
 				topic: "exclusive-topic",
 			},
-			gotErr:  ErrPublishExclusiveNotConsumed,
+			gotErr:  ErrChannelNotConsumed,
 			wantErr: true,
 		},
 	}
@@ -266,10 +270,10 @@ func TestConsumingError(t *testing.T) {
 				}
 			}
 
-			_, err := chb.Publish(tt.args.topic, &api.Message{}, nil)
+			_, _, err := chb.Publish(tt.args.topic, &api.Message{}, nil, false)
 
-			if err != tt.gotErr {
-				t.Errorf("Publish(), want error: %v, error: %v", ErrPublishExclusiveNotConsumed, err)
+			if tt.gotErr != nil && !errors.Is(err, tt.gotErr) {
+				t.Errorf("Publish(), want error: %v, error: %v", tt.gotErr, err)
 			}
 		})
 	}
@@ -316,11 +320,11 @@ func TestExclusiveTimeoutError(t *testing.T) {
 	// channel B
 	chb := NewChannel()
 	ex.AddChannel(chb)
-	_, err = chb.Publish("foo", &api.Message{}, nil)
+	_, _, err = chb.Publish("foo", &api.Message{}, nil, false)
 	wg.Wait()
 
-	if err != ErrNotSubscribedExclusive {
-		t.Errorf("expected error: %v, but got: %v", ErrNotSubscribedExclusive, err)
+	if !errors.Is(err, ErrChannelNotConsumed) {
+		t.Errorf("expected error: %v, but got: %v", ErrChannelNotConsumed, err)
 	}
 }
 
@@ -346,16 +350,51 @@ func TestExclusivePublisherError_notSubscribed(t *testing.T) {
 	chb := NewChannel()
 	ex.AddChannel(chb)
 	// publish without subscription
-	_, err = chb.Publish("foo", &api.Message{}, nil)
+	_, _, err = chb.Publish("foo", &api.Message{}, nil, false)
 
-	if err != ErrNotSubscribedExclusive {
-		t.Error("expected error: ", ErrNotSubscribedExclusive)
+	if !errors.Is(err, ErrChannelNotConsumed) {
+		t.Error("expected error: ", ErrChannelNotConsumed)
 	}
 }
 
-func TestExchlusiveChannelDialog(t *testing.T) {
+func TestConsumingRPC(t *testing.T) {
+	type args struct {
+		mode  modeType
+		topic string
+		wait  bool
+	}
+	tests := []struct {
+		name    string
+		args    args
+		gotErr  error
+		wantErr bool
+	}{
+		{
+			name: "Exclusive conversation",
+			args: args{
+				mode:  (RPCMode | ExclusiveMode),
+				topic: "exclusive-topic",
+			},
+			wantErr: false,
+		},
+		{
+			name: "RPC conversation",
+			args: args{
+				mode:  RPCMode,
+				topic: "rpc-topic",
+				wait:  true,
+			},
+			wantErr: false,
+		},
+	}
+
 	// instatinate exchange
 	ex := New()
+
+	var (
+		wg   sync.WaitGroup
+		wait atomicBool
+	)
 
 	// channel A
 	cha := NewChannel()
@@ -365,125 +404,103 @@ func TestExchlusiveChannelDialog(t *testing.T) {
 	chb := NewChannel()
 	ex.AddChannel(chb)
 
-	var wg sync.WaitGroup
-	var stop atomicBool
-	var pa, pb int
-
-	p2p := func(ch *Channel, ping *int, who string) {
-		// declare exclusive
-		sid, err := ch.Subscribe("foo-ping-rpc", "", (RPCMode | ExclusiveMode))
-		if err != nil {
-			t.Fatal(err)
-		}
-
+	worker := func(t *testing.T, ch *Channel, ar args, sid uuid.UUID, ping *int32) func() {
 		msg := ch.Consume(sid)
-		defer func() {
-			ch.StopConsume(sid)
-			wg.Done()
-		}()
-
-		wg.Done()
-
-		for {
-			select {
-			case m := <-msg:
-				i, err := strconv.Atoi(string(m.Body))
-				if err != nil {
-					t.Fatal(err)
-				}
-
-				i++
-				*ping = i
-
-				if i > 4 {
-					stop.setTrue()
-					return
-				}
-
-				ack, err := ch.Publish("foo-ping-rpc", &api.Message{Body: []byte(strconv.Itoa(i))}, nil)
-				if ack != 1 {
-					t.Fatal("excpected ack=1 but got: ", ack)
-				}
-				if err != nil {
-					t.Fatal(err)
-				}
-
-			default:
-				if stop.isSet() {
-					return
-				}
-			}
-		}
-	}
-
-	//t.Log("prepare consume")
-	wg.Add(2)
-	go p2p(cha, &pa, "cha")
-	go p2p(chb, &pb, "chb")
-	wg.Wait()
-
-	//t.Log("first push")
-	wg.Add(2)
-	_, err := chb.Publish("foo-ping-rpc", &api.Message{Body: []byte("1")}, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wg.Wait()
-
-	if pa != 4 {
-		t.Error("channel `a` must do 4 pushes")
-	}
-
-	if pb != 5 {
-		t.Error("channel `b` must do 5 pushes")
-	}
-}
-
-func BenchmarkFanout_1000ch(b *testing.B) {
-	// instatinate exchange
-	ex := New()
-	ch := NewChannel()
-	ex.AddChannel(ch)
-
-	var wg sync.WaitGroup
-
-	for i := 0; i < 1000; i++ {
 		wg.Add(1)
-		go func(ch *Channel, i int) {
 
-			// declare exclusive
-			sid, err := ch.Subscribe("foo-bench", "", 0)
-			if err != nil {
-				b.Fatal(err)
-			}
-			defer ch.StopConsume(sid)
-
-			msg := ch.Consume(sid)
-			wg.Done()
+		return func() {
+			defer func() {
+				ch.StopConsume(sid)
+				wg.Done()
+				wait.setFalse()
+			}()
 
 			for {
-				<-msg
-			}
-		}(ch, i)
-	}
+				select {
+				case m := <-msg:
+					if len(m.GetId()) == 0 {
+						t.Errorf("Consume(), message id required")
+					}
 
-	wg.Wait()
+					i, err := strconv.Atoi(string(m.Body))
+					if err != nil {
+						t.Errorf("Consume(), message parse error = %v", err)
+						return
+					}
 
-	pb := NewChannel()
-	ex.AddChannel(pb)
+					if ar.mode&ExclusiveMode != 0 {
+						if atomic.LoadInt32(ping) > 0 {
+							return
+						}
+					}
 
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		_, err := pb.Publish("foo-bench", &api.Message{}, nil)
-		b.StopTimer()
-		if err != nil {
-			if _, ok := err.(*CircuitErrors); ok {
-				b.Log(err)
-			} else {
-				b.Fatal(err)
+					ack, _, err := ch.Publish(ar.topic, &api.Message{Body: []byte("1"), CorId: m.GetId()}, nil, false)
+					if err != nil {
+						t.Errorf("Publish(), error = %v", err)
+						return
+					}
+					if ack != 1 {
+						t.Errorf("Publish(), got ack = %d, want act = 1", ack)
+						return
+					}
+
+					atomic.AddInt32(ping, int32(i))
+
+					if ar.mode&(RPCMode|ExclusiveMode) == RPCMode {
+						return
+					}
+
+				default:
+					if !wait.isSet() {
+						return
+					}
+				}
 			}
 		}
-		b.StartTimer()
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wait.setTrue()
+
+			// declare exclusive
+			sid, err := cha.Subscribe(tt.args.topic, "", tt.args.mode)
+			if err != nil {
+				t.Fatalf("Subscribe(), channel A: %v", err)
+			}
+
+			var ping int32
+			wk := worker(t, cha, tt.args, sid, &ping)
+			go wk()
+
+			if tt.args.mode&ExclusiveMode != 0 {
+				// declare exclusive
+				sid, err := chb.Subscribe(tt.args.topic, "", tt.args.mode)
+				if err != nil {
+					t.Fatalf("Subscribe(), channel B: %v", err)
+				}
+
+				wk := worker(t, chb, tt.args, sid, &ping)
+				go wk()
+			}
+
+			mid := uuid.New()
+			ack, res, err := chb.Publish(tt.args.topic, &api.Message{Id: mid.String(), Body: []byte("1")}, nil, tt.args.wait)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wg.Wait()
+
+			if tt.args.mode&(RPCMode|ExclusiveMode) == RPCMode {
+				if ack != 1 {
+					t.Errorf("Publish(), got ack = %d, want act = 1", ack)
+				}
+
+				if res.GetCorId() != mid.String() {
+					t.Errorf("Publish(), got corId = %s, want corId = %s", res.CorId, mid.String())
+				}
+			}
+		})
 	}
 }
 
@@ -538,17 +555,17 @@ func TestPublishTagRouting(t *testing.T) {
 	ex.AddChannel(pub)
 
 	wg.Add(2)
-	_, err := pub.Publish("foo", &api.Message{Body: []byte("1")}, []string{"cha"})
+	_, _, err := pub.Publish("foo", &api.Message{Body: []byte("1")}, []string{"cha"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = pub.Publish("foo", &api.Message{Body: []byte("1")}, []string{"chb"})
+	_, _, err = pub.Publish("foo", &api.Message{Body: []byte("1")}, []string{"chb"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = pub.Publish("foo", &api.Message{Body: []byte("2")}, []string{"cha", "chb"})
+	_, _, err = pub.Publish("foo", &api.Message{Body: []byte("2")}, []string{"cha", "chb"}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -559,53 +576,148 @@ func TestPublishTagRouting(t *testing.T) {
 	}
 }
 
-//func BenchmarkFanoutSliceStack(b *testing.B) {
-//	// predefine
-//	st := newSliceStore()
-//	for i := 0; i < 10; i++ {
-//		st.add(NewChannel())
-//	}
+func BenchmarkFanout(b *testing.B) {
+	// instatinate exchange
+	ex := New()
+	stop := make(chan struct{})
+	chBuf := make(chan struct{}, 2000)
+
+	sub := func(i int) {
+		for ; i > 0; i-- {
+			ch := NewChannel()
+			ex.AddChannel(ch)
+
+			sid, err := ch.Subscribe("foo-bench", "", FanoutMode)
+			if err != nil {
+				b.Fatal(err)
+			}
+
+			wk := func(ch *Channel, msg <-chan *api.Message) {
+				defer func() {
+					ex.CloseChannel(ch.token)
+					<-chBuf
+				}()
+
+				for {
+					select {
+					case <-msg:
+					case <-stop:
+						return
+					}
+				}
+			}
+
+			go wk(ch, ch.Consume(sid))
+			chBuf <- struct{}{}
+		}
+	}
+
+	unsub := func() {
+		for i := len(chBuf); i > 0; i-- {
+			stop <- struct{}{}
+		}
+	}
+
+	pb := NewChannel()
+	ex.AddChannel(pb)
+
+	b.ResetTimer()
+	for k := 0.; k <= 10; k++ {
+		n := int(math.Pow(2, k))
+
+		b.StopTimer()
+		sub(n)
+		b.StartTimer()
+
+		b.Run(fmt.Sprintf("consumers/%d", n), func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				pb.Publish("foo-bench", &api.Message{}, nil, false)
+			}
+		})
+
+		b.StopTimer()
+		unsub()
+		b.StartTimer()
+	}
+}
+
 //
-//	addch := make(chan *Channel)
-//	rmch := make(chan uuid.UUID)
-//
-//	go func() {
-//		for {
-//			ch := <-addch
-//
-//			st.Lock()
-//			st.add(ch)
-//			st.Unlock()
-//		}
-//	}()
-//
-//	go func() {
-//		for {
-//			ch := <-rmch
-//			st.Lock()
-//			st.remove(ch)
-//			st.Unlock()
-//		}
-//	}()
-//
-//	b.ResetTimer()
-//	for i := 0; i < b.N; i++ {
-//		b.StopTimer()
-//		ch := NewChannel()
-//		b.StartTimer()
-//
-//		addch <- ch
-//
-//		if (i % 3) == 0 {
-//			b.StopTimer()
-//			st.Lock()
-//			idx := st.len() - 5
-//			tk := st.registry[idx].token
-//			st.Unlock()
-//			b.StartTimer()
-//
-//			rmch <- tk
-//		}
-//	}
-//}
-//
+func BenchmarkRPC(b *testing.B) {
+	ex := New()
+
+	cons := NewChannel()
+	ex.AddChannel(cons)
+
+	sid, err := cons.Subscribe("foo-bench-rpc", "", RPCMode)
+	if err != nil {
+		b.Fatal(err)
+	}
+
+	go func(ch *Channel, msg <-chan *api.Message) {
+		defer func() {
+			ex.CloseChannel(ch.token)
+		}()
+
+		for {
+			select {
+			case m := <-msg:
+				cons.Publish("foo-bench-rpc", &api.Message{CorId: m.GetId()}, nil, false)
+			}
+		}
+	}(cons, cons.Consume(sid))
+
+	stop := make(chan struct{})
+	chBuf := make(chan struct{}, 2000)
+	msgs := make(chan *api.Message, 2000)
+
+	pub := func(i int) {
+		for ; i > 0; i-- {
+			ch := NewChannel()
+			ex.AddChannel(ch)
+
+			wk := func(ch *Channel) {
+				defer func() {
+					ex.CloseChannel(ch.token)
+					<-chBuf
+				}()
+
+				for {
+					select {
+					case msg := <-msgs:
+						ch.Publish("foo-bench-rpc", msg, nil, true)
+					case <-stop:
+						return
+					}
+				}
+			}
+
+			go wk(ch)
+			chBuf <- struct{}{}
+		}
+	}
+
+	unpub := func() {
+		for i := len(chBuf); i > 0; i-- {
+			stop <- struct{}{}
+		}
+	}
+
+	b.ResetTimer()
+	for k := 0.; k <= 8; k++ {
+		n := int(math.Pow(2, k))
+
+		b.StopTimer()
+		pub(n)
+		b.StartTimer()
+
+		b.Run(fmt.Sprintf("publish/%d", n), func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				msgs <- &api.Message{}
+			}
+		})
+
+		b.StopTimer()
+		unpub()
+		b.StartTimer()
+	}
+}

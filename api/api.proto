@@ -32,17 +32,26 @@ message PublishRequest {
     string topic = 1;
     repeated string tag = 2;
     Message message = 3;
+    bool Wait = 4;
 }
 
 message PublishResponse {
     int32 ack = 1;
+    Message message = 2;
+}
+
+// bit flags
+enum SubscribeMode {
+    Fanout = 0;
+    RPC = 1;
+    RPCExclusive = 3;
 }
 
 // Subscription represents 
 message SubscribeRequest {
     string name = 1;
     string tag = 2;
-    bool exclusive = 3;
+    SubscribeMode mode = 3;
 }
 
 message SubscribeResponse {
