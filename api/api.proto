@@ -58,9 +58,18 @@ message SubscribeResponse {
     string id = 1;
 }
 
+message UnsubscribeRequest {
+    string id = 1;
+}
+
+message UnsubscribeResponse {
+    bool ok = 1;
+}
+
 service Exchange {
     rpc Authenticate(Identity) returns (Token);
     rpc Consume(ConsumeRequest) returns (stream Message);
     rpc Publish(PublishRequest) returns (PublishResponse);
     rpc Subscribe(SubscribeRequest) returns (SubscribeResponse);
+    rpc Unsubscribe(UnsubscribeRequest) returns (UnsubscribeResponse);
 }

@@ -140,6 +140,7 @@ func (s *subscriptions) subscribe(ch *Channel, name, tag string, mode modeType) 
 		s.Unlock()
 	} else {
 		cnt := 0
+
 		tp.dlv.Lock()
 		for _, d := range tp.dlv.registry {
 			// already subscribed and can consume topic messages
@@ -147,7 +148,7 @@ func (s *subscriptions) subscribe(ch *Channel, name, tag string, mode modeType) 
 				tp.dlv.Unlock()
 
 				if mode != tp.mode {
-					return d.id, ErrChangeTopicMode
+					return d.id, fmt.Errorf("topic mode=(%d), requested=(%d): %w", tp.mode, mode, ErrChangeTopicMode)
 				}
 
 				return d.id, nil
@@ -189,4 +190,34 @@ func (s *subscriptions) subscribe(ch *Channel, name, tag string, mode modeType) 
 	tp.dlv.Unlock()
 
 	return dlv.id, nil
+}
+
+func (s *subscriptions) unsubscribe(ch *Channel, id uuid.UUID) {
+	dlv, ok := ch.consumes[id]
+	if !ok {
+		return
+	}
+
+	ch.closeConsume(id)
+
+	delete(ch.consumes, dlv.id)
+
+	// Remove from topic
+	tp := s.topic(dlv.tpName)
+	if tp == nil {
+		return
+	}
+
+	tp.dlv.Lock()
+	tp.dlv.remove(dlv.id)
+	rl := tp.dlv.len()
+	tp.dlv.Unlock()
+
+	if (tp.mode&(RPCMode|ExclusiveMode)) != 0 && rl == 0 {
+		s.Lock()
+		delete(s.subsr, tp.name)
+		s.Unlock()
+
+		tp.dlv = nil
+	}
 }

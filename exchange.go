@@ -111,31 +111,8 @@ func (ex *Exchange) CloseChannel(id uuid.UUID) {
 	ch.mutex.Lock()
 	defer ch.mutex.Unlock()
 
-	// gather all topics where channel is subscribed.
-	// drop read
-	tps := make([]string, 0, len(ch.consumes))
-	for id, d := range ch.consumes {
-		// drop ready
-		ch.closeConsume(id)
-		// delete object
-		delete(ch.consumes, id)
-		// store topic name
-		tps = append(tps, d.tpName)
-	}
-
-	// remove all subscriptions
-	for _, name := range tps {
-		tp := ex.topic(name)
-
-		tp.dlv.walk(func(idx int, d *delivery) error {
-			if d != nil && bytes.Equal(d.chId[:], ch.token[:]) {
-				tp.dlv.Lock()
-				tp.dlv.removeAt(idx)
-				tp.dlv.Unlock()
-			}
-
-			return nil
-		}, nil, nil)
+	for id, _ := range ch.consumes {
+		ex.unsubscribe(ch, id)
 	}
 
 	// remove from registry

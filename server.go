@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/Agent-Plus/go-grpc-broker/api"
-	uuid "github.com/satori/go.uuid"
+	uuid "github.com/google/uuid"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -59,7 +59,7 @@ type connStats struct {
 }
 
 func (h *connStats) TagConn(ctx context.Context, info *stats.ConnTagInfo) context.Context {
-	return context.WithValue(ctx, connIdCtxKey, uuid.NewV4())
+	return context.WithValue(ctx, connIdCtxKey, uuid.New())
 }
 
 func (h *connStats) TagRPC(ctx context.Context, info *stats.RPCTagInfo) context.Context {
@@ -144,7 +144,7 @@ func (m *ExchangeServer) Consume(req *api.ConsumeRequest, stream api.Exchange_Co
 	}
 
 	var id uuid.UUID
-	if id, err = uuid.FromString(req.Id); err != nil {
+	if id, err = uuid.Parse(req.Id); err != nil {
 		return status.Error(codes.InvalidArgument, err.Error())
 	}
 
@@ -180,20 +180,21 @@ func (m *ExchangeServer) Publish(ctx context.Context, pb *api.PublishRequest) (*
 		return nil, status.Error(codes.Unauthenticated, err.Error())
 	}
 
-	var ack int
-	ack, err = ch.Publish(pb.Topic, pb.Message, pb.Tag)
+	var (
+		ack int
+		res *api.Message
+	)
+	ack, res, err = ch.Publish(pb.Topic, pb.Message, pb.Tag, pb.Wait)
 	if err != nil {
-		if _, ok := err.(*CircuitErrors); ok {
-			// TODO; Dump these errors to debug
-			err = nil
-		} else {
+		if _, ok := err.(*CircuitErrors); !ok {
 			return nil, err
 		}
 	}
 
 	return &api.PublishResponse{
-		Ack: int32(ack),
-	}, nil
+		Ack:     int32(ack),
+		Message: res,
+	}, err
 }
 
 // Subscribe implements api.ExchangeServer interface to subscribe client to the topic
@@ -208,19 +209,47 @@ func (m *ExchangeServer) Subscribe(ctx context.Context, sb *api.SubscribeRequest
 		return nil, status.Error(codes.Unauthenticated, err.Error())
 	}
 
-	var mode modeType
-	if sb.Exclusive {
-		mode = (RPCMode | ExclusiveMode)
+	if sb.Mode < 0 || modeType(sb.Mode) > (RPCMode|ExclusiveMode) {
+		return nil, status.Error(codes.InvalidArgument, "invalid topic mode")
 	}
+	mode := modeType(sb.Mode)
 
 	id, err := ch.Subscribe(sb.Name, sb.Tag, mode)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, ErrSubscribeRejected) {
+			return nil, status.Error(codes.AlreadyExists, err.Error())
+		}
+
+		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
 
 	return &api.SubscribeResponse{
 		Id: id.String(),
 	}, nil
+}
+
+func (m *ExchangeServer) Unsubscribe(ctx context.Context, sb *api.UnsubscribeRequest) (*api.UnsubscribeResponse, error) {
+	tk := tkFromHeader(ctx)
+	if len(tk) == 0 {
+		return nil, status.Error(codes.Unauthenticated, ErrUknonwToken.Error())
+	}
+
+	ch, err := m.Channel(tk)
+	if err != nil {
+		return nil, status.Error(codes.Unauthenticated, err.Error())
+	}
+
+	resp := &api.UnsubscribeResponse{}
+
+	var id uuid.UUID
+	if id, err = uuid.Parse(sb.Id); err != nil {
+		return resp, status.Error(codes.InvalidArgument, err.Error())
+	}
+
+	err = ch.Unsubscribe(id)
+
+	resp.Ok = (err == nil)
+	return resp, err
 }
 
 // Run starts networking

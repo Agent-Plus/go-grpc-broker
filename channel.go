@@ -74,6 +74,18 @@ func (ch *Channel) Consume(id uuid.UUID) <-chan *api.Message {
 	return nil
 }
 
+func (ch *Channel) Exchange() (ex *Exchange, err error) {
+	ch.mutex.Lock()
+	ex = ch.ex
+	ch.mutex.Unlock()
+
+	if ex == nil {
+		err = ErrStandAloneChannel
+	}
+
+	return
+}
+
 type publisher struct {
 	// acknowledgement counter, shows success writes to the topic channels
 	ack int32
@@ -113,13 +125,14 @@ func (pb *publisher) recv(msg *api.Message) {
 
 // Publish sends given message to the given topic
 func (ch *Channel) Publish(name string, msg *api.Message, tags []string, wait bool) (int, *api.Message, error) {
+	ex, err := ch.Exchange()
+	if err != nil {
+		return 0, nil, err
+	}
+
 	// set daedline for the whole operation
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
-	if ch.ex == nil {
-		return 0, nil, ErrStandAloneChannel
-	}
 
 	if len(msg.Id) == 0 {
 		msg.Id = uuid.NewString()
@@ -142,7 +155,7 @@ func (ch *Channel) Publish(name string, msg *api.Message, tags []string, wait bo
 		pb.wait.setTrue()
 	}
 
-	err := ch.ex.send(ctx, pb)
+	err = ex.send(ctx, pb)
 	if err != nil {
 		return int(pb.ack), nil, err
 	}
@@ -187,15 +200,29 @@ func (ch *Channel) closeConsume(id uuid.UUID) {
 // Mode declares new topic with given mode: topic in mode RPC or Exclusive can have only one consumer
 // to response on published message or consumed them silently
 func (ch *Channel) Subscribe(name, tag string, mode modeType) (uuid.UUID, error) {
-	if ch.ex == nil {
-		return uuid.UUID{}, ErrStandAloneChannel
+	ex, err := ch.Exchange()
+	if err != nil {
+		return uuid.UUID{}, err
 	}
 
-	return ch.ex.subscribe(ch, name, tag, mode)
+	return ex.subscribe(ch, name, tag, mode)
 }
 
 func (ch *Channel) Token() string {
 	return ch.token.String()
+}
+
+func (ch *Channel) Unsubscribe(id uuid.UUID) error {
+	ex, err := ch.Exchange()
+	if err != nil {
+		return err
+	}
+
+	ch.mutex.Lock()
+	ex.unsubscribe(ch, id)
+	ch.mutex.Unlock()
+
+	return nil
 }
 
 // kvStore represents key-value store of the channels with manager to control race.
