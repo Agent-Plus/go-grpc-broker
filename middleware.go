@@ -2,10 +2,11 @@ package broker
 
 import (
 	"context"
+	"strconv"
 	"time"
 
 	"github.com/Agent-Plus/go-grpc-broker/api"
-	uuid "github.com/satori/go.uuid"
+	uuid "github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/status"
 )
@@ -62,25 +63,43 @@ func LogUnaryInterceptor(il Logger) grpc.UnaryServerInterceptor {
 		resp, err := handler(ctx, req)
 
 		conId, _ := ctx.Value(connIdCtxKey).(uuid.UUID)
+
+		fm := "finished unary in %v, conn=(%s), method=(%s)"
+		if v, ok := req.(*api.PublishRequest); ok && v != nil {
+			fm += ", topic=(" + v.Topic + ")"
+		}
+
+		if v, ok := resp.(*api.PublishResponse); ok && v != nil {
+			fm += ", consumed=(" + strconv.Itoa(int(v.Ack)) + ")"
+		}
+
+		il.Printf(
+			fm,
+			time.Now().Sub(startTime),
+			conId,
+			info.FullMethod,
+		)
+
 		if err != nil {
-			il.Errorf(
-				"finished unary in %v, conn=(%s), method=(%s): %v",
-				time.Now().Sub(startTime),
-				conId,
-				info.FullMethod,
-				err,
-			)
-		} else {
-			fm := "finished unary in %v, conn=(%s), method=(%s)"
-			if v, ok := req.(*api.PublishRequest); ok && v != nil {
-				fm += ", topic=(" + v.Topic + ")"
+			if e, ok := err.(*CircuitErrors); ok {
+				for _, ev := range e.err {
+					il.Errorf(
+						"conn=(%s), method=(%s): %v",
+						conId,
+						info.FullMethod,
+						ev,
+					)
+				}
+
+				err = nil
+			} else {
+				il.Errorf(
+					"finished unary in %v, conn=(%s), method=(%s): %v",
+					conId,
+					info.FullMethod,
+					err,
+				)
 			}
-			il.Printf(
-				fm,
-				time.Now().Sub(startTime),
-				conId,
-				info.FullMethod,
-			)
 		}
 
 		return resp, err
