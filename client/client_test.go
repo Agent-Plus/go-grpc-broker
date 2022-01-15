@@ -3,14 +3,13 @@ package client
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"sync"
 	"testing"
 	"time"
 
 	broker "github.com/Agent-Plus/go-grpc-broker"
-	"github.com/Agent-Plus/go-grpc-broker/api"
+	uuid "github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 
 	"google.golang.org/grpc"
@@ -50,14 +49,8 @@ func bufDialer(context.Context, string) (net.Conn, error) {
 
 func newClient(opt ...ClientOption) (*ExchangeClient, error) {
 	c := New(opt...)
-
-	conn, err := grpc.DialContext(context.Background(), "bufnet", grpc.WithContextDialer(bufDialer), grpc.WithInsecure())
-	if err != nil {
-		return nil, fmt.Errorf("Failed to dial bufnet: %w", err)
-	}
-	c.api = api.NewExchangeClient(conn)
-
-	return c, nil
+	err := c.DialContext(context.Background(), "bufnet", grpc.WithContextDialer(bufDialer), grpc.WithInsecure())
+	return c, err
 }
 
 func TestAuthenticate(t *testing.T) {
@@ -87,7 +80,7 @@ func TestSubscribe(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	id, err := cl.Subscribe("foo", "", false)
+	id, err := cl.Subscribe("foo", "", FanoutMode)
 	if err != nil {
 		t.Error(err)
 	}
@@ -102,56 +95,128 @@ func TestSubscribe(t *testing.T) {
 }
 
 func TestConsumeAndPublish(t *testing.T) {
-	var (
-		err      error
-		pub, sub *ExchangeClient
-	)
-	pub, err = newClient()
-	if err != nil {
-		t.Fatal(err)
+	type args struct {
+		mode  ModeType
+		topic string
+		wait  bool
+	}
+	tests := []struct {
+		name    string
+		args    args
+		gotErr  error
+		wantErr bool
+		wantRes bool
+	}{
+		{
+			name: "publish fanout and no wait",
+			args: args{
+				mode:  FanoutMode,
+				topic: "foo-fanout",
+				wait:  false,
+			},
+			wantErr: false,
+			wantRes: false,
+		},
+		{
+			name: "publish rpc and wait",
+			args: args{
+				mode:  RPCMode,
+				topic: "foo-rpc",
+				wait:  true,
+			},
+			wantErr: false,
+			wantRes: true,
+		},
 	}
 
-	sub, err = newClient()
+	pub, err := newClient()
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer func() {
+		err := pub.Close()
+		if err != nil {
+			t.Errorf("Close(), error = %v", err)
+		}
+	}()
 
 	err = pub.Authenticate("6704be61-3d72-4241-a740-ffb0d6c56da8", "secret")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = sub.Authenticate("d94c4a7c-28f0-4e34-a359-c036900b476d", "secret")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	id, err := sub.Subscribe("foo", "", false)
-	if err != nil {
-		t.Error(err)
-	}
-
-	dlv, err := sub.Consume(id)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	var wg sync.WaitGroup
-	wg.Add(1)
 
-	go func() {
-		defer wg.Done()
-		for {
-			<-dlv
-			return
-		}
-	}()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sub, err := newClient()
+			if err != nil {
+				t.Errorf("newClient(), error = %v", err)
+				return
+			}
+			defer func() {
+				err := sub.Close()
+				if err != nil {
+					t.Errorf("Close(), error = %v", err)
+				}
+			}()
 
-	m := NewMessage()
-	m.Id = "xyz"
-	pub.Publish("foo", m, nil)
+			err = sub.Authenticate("d94c4a7c-28f0-4e34-a359-c036900b476d", "secret")
+			if err != nil {
+				t.Errorf("Authenticate(), error = %v", err)
+				return
+			}
 
-	wg.Wait()
+			var subId string
+			subId, err = sub.Subscribe(tt.args.topic, "", tt.args.mode)
+			if err != nil {
+				t.Errorf("Subscribe(), error = %v", err)
+				return
+			}
+
+			wg.Add(1)
+			fn := func(sub *ExchangeClient, tpName string, wait bool) func() {
+				dlv, err := sub.Consume(subId)
+				if err != nil {
+					t.Errorf("Consume(), error = %v", err)
+					return nil
+				}
+
+				return func() {
+					defer wg.Done()
+
+					msg := <-dlv
+
+					if wait {
+						m := NewMessage()
+						m.corId = msg.Id
+
+						sub.Publish(tpName, m, nil, false)
+					}
+				}
+			}(sub, tt.args.topic, tt.args.wait)
+
+			go fn()
+
+			m := NewMessage()
+			m.Id = uuid.NewString()
+			res, err := pub.Publish(tt.args.topic, m, nil, tt.args.wait)
+
+			wg.Wait()
+
+			if (err != nil) != tt.wantErr || err != tt.gotErr {
+				t.Errorf("Publish(), wait = %v, want error = %v, error = %v", tt.args.wait, tt.gotErr, err)
+			}
+
+			if nn := (res != nil); nn != tt.wantRes {
+				t.Errorf("Publish(), wait = %v, want response = %v", tt.args.wait, tt.wantRes)
+			} else if nn && tt.wantRes {
+				if res.corId != m.Id {
+					t.Errorf("Publish(), want response corId = %v, got corId = %v", m.Id, res.corId)
+				}
+			}
+		})
+	}
 }
 
 func TestConsumeAndPublishTags(t *testing.T) {
@@ -173,7 +238,7 @@ func TestConsumeAndPublishTags(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		sid, err := sub.Subscribe(topic, tag, false)
+		sid, err := sub.Subscribe(topic, tag, FanoutMode)
 		if err != nil {
 			t.Error(err)
 		}
@@ -236,7 +301,7 @@ func TestConsumeAndPublishTags(t *testing.T) {
 		msg := NewMessage()
 		msg.Headers.SetInt64("attempt", int64(i))
 
-		pub.Publish("foo", msg, tags)
+		pub.Publish("foo", msg, tags, false)
 	}
 
 	dn.Wait()
@@ -261,7 +326,7 @@ func TestMuxTimeoutPublishAndResponse(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = pub.Subscribe("foo", "", true)
+	_, err = pub.Subscribe("foo", "", (RPCMode | ExclusiveMode))
 	if err != nil {
 		t.Error(err)
 	}
@@ -275,24 +340,21 @@ func TestMuxTimeoutPublishAndResponse(t *testing.T) {
 	}
 }
 
-func TestMuxPublishAndResponse(t *testing.T) {
-	// remote subscriber A
+func TestMuxPublishRequest(t *testing.T) {
+	topicName := "foo-exclusive"
+
 	var sub *ServeMux
-	if c, err := newClient(
-		WithAuthentication("910353f5-a2e9-4f5d-b0dd-bd5d9b3660ea", "secret"),
-	); err != nil {
-		t.Fatal(err)
+	if c, err := newClient(WithAuthentication("910353f5-a2e9-4f5d-b0dd-bd5d9b3660ea", "secret")); err != nil {
+		t.Errorf("newClient(), error = %v", err)
+		return
 	} else {
 		sub = NewServeMux(c)
 	}
-
-	// remote subscriber B
-	var pub *ServeMux
-	if c, err := newClient(WithAuthentication("6704be61-3d72-4241-a740-ffb0d6c56da8", "secret")); err != nil {
-		t.Fatal(err)
-	} else {
-		pub = NewServeMux(c)
-	}
+	defer func() {
+		if err := sub.Close(); err != nil {
+			t.Errorf("Close(), error = %v", err)
+		}
+	}()
 
 	sub.Get("ping", HandlerFunc(func(w ResponseWriter, msg *Message) {
 		if string(msg.Body) != "ping" {
@@ -304,47 +366,176 @@ func TestMuxPublishAndResponse(t *testing.T) {
 		w.PublishResponse()
 	}))
 
-	sc := sub.StartServe("foo-rpc", "", true)
-	pc := pub.StartServe("foo-rpc", "", true)
-
-	var wg sync.WaitGroup
-	wg.Add(1)
-
 	// wait clients are ready to test ping-pong with response wait
-	go func() {
-		defer wg.Done()
-		so := sc.(*observer)
-		po := pc.(*observer)
-		for {
-			if po.serving.isSet() && so.serving.isSet() {
-				break
-			}
+	wt := func(so *observer) {
+		for !so.serving.isSet() {
+		}
+	}
+
+	sc := sub.StartServe(topicName, "", RPCMode|ExclusiveMode)
+	defer sc.Close()
+
+	wt(sc.(*observer))
+
+	var pub *ServeMux
+	if c, err := newClient(WithAuthentication("6704be61-3d72-4241-a740-ffb0d6c56da8", "secret")); err != nil {
+		t.Errorf("newClient(), error = %v", err)
+		return
+	} else {
+		pub = NewServeMux(c)
+	}
+	defer func() {
+		if err := pub.Close(); err != nil {
+			t.Errorf("Close(), error = %v", err)
 		}
 	}()
 
-	wg.Wait()
+	pc := pub.StartServe(topicName, "", (RPCMode | ExclusiveMode))
+	defer pc.Close()
+
+	wt(pc.(*observer))
 
 	msg := NewMessage()
 	msg.Id = "123456"
 	msg.Body = []byte("ping")
 
 	SetMessageActionGet(msg, "ping")
-	resp, err := pub.PublishRequest("foo-rpc", msg, nil)
+
+	res, err := pub.PublishRequest(topicName, msg, nil)
 
 	if err != nil {
-		t.Error(err)
+		t.Errorf("PublishRequest(),  got error = %v", err)
 	}
 
-	if resp == nil {
-		t.Error("response must not be nil")
+	if res == nil {
+		t.Errorf("PublishRequest(), want response, got nil")
 	} else {
-		if resp.Id != "123457" {
-			t.Errorf("wrong id: %s", resp.Id)
+		if res.corId != msg.Id {
+			t.Errorf("PublishRequest(), want response corId = %v, got corId = %v", msg.Id, res.corId)
 		}
 
-		if string(resp.Body) != "pong" {
-			t.Errorf("wrong response body: %s", resp.Body)
+		if res.Id != "123457" {
+			t.Errorf("wrong id: %s", res.Id)
 		}
+
+		if string(res.Body) != "pong" {
+			t.Errorf("wrong response body: %s", res.Body)
+		}
+	}
+}
+
+func TestMuxPublish(t *testing.T) {
+	type args struct {
+		mode  ModeType
+		topic string
+		wait  bool
+	}
+	tests := []struct {
+		name    string
+		args    args
+		wantErr bool
+		wantRes bool
+	}{
+		{
+			name: "publish request in exclusive mode",
+			args: args{
+				mode:  (RPCMode | ExclusiveMode),
+				topic: "foo-rpc",
+				wait:  false,
+			},
+			wantErr: true,
+			wantRes: false,
+		},
+		{
+			name: "publish request in rpc mode no wait",
+			args: args{
+				mode:  RPCMode,
+				topic: "foo-rpc",
+				wait:  false,
+			},
+			wantErr: false,
+			wantRes: false,
+		},
+	}
+
+	// wait clients are ready to test ping-pong with response wait
+	wt := func(so *observer) {
+		for !so.serving.isSet() {
+		}
+	}
+
+	var sub *ServeMux
+	if c, err := newClient(WithAuthentication("910353f5-a2e9-4f5d-b0dd-bd5d9b3660ea", "secret")); err != nil {
+		t.Errorf("newClient(), error = %v", err)
+		return
+	} else {
+		sub = NewServeMux(c)
+	}
+	defer func() {
+		if err := sub.Close(); err != nil {
+			t.Errorf("Close(), error = %v", err)
+		}
+	}()
+
+	sub.Get("ping", HandlerFunc(func(w ResponseWriter, msg *Message) {
+		if string(msg.Body) != "ping" {
+			t.Errorf("wrong request message body: %s", msg.Body)
+		}
+
+		w.SetId("123457")
+		w.SetBody([]byte("pong"))
+		w.PublishResponse()
+	}))
+
+	// remote subscriber B
+	var pub *ServeMux
+	if c, err := newClient(WithAuthentication("6704be61-3d72-4241-a740-ffb0d6c56da8", "secret")); err != nil {
+		t.Errorf("newClient(), error = %v", err)
+		return
+	} else {
+		pub = NewServeMux(c)
+	}
+	defer func() {
+		if err := pub.Close(); err != nil {
+			t.Errorf("Close(), error = %v", err)
+		}
+	}()
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sc := sub.StartServe(tt.args.topic, "", tt.args.mode)
+			defer sc.Close()
+
+			wt(sc.(*observer))
+
+			msg := NewMessage()
+			msg.Id = "123456"
+			msg.Body = []byte("ping")
+
+			SetMessageActionGet(msg, "ping")
+
+			res, err := pub.Publish(tt.args.topic, msg, nil, tt.args.wait)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Publish(), want error = %v, got error = %v", tt.wantErr, err)
+			}
+
+			if nn := (res != nil); nn != tt.wantRes {
+				t.Errorf("Publish(), wait = %v, want response = %v", tt.args.wait, tt.wantRes)
+			} else if nn && tt.wantRes {
+				if res.corId != msg.Id {
+					t.Errorf("Publish(), want response corId = %v, got corId = %v", msg.Id, res.corId)
+				}
+
+				if res.Id != "123457" {
+					t.Errorf("wrong id: %s", res.Id)
+				}
+
+				if string(res.Body) != "pong" {
+					t.Errorf("wrong response body: %s", res.Body)
+				}
+			}
+		})
 	}
 }
 
