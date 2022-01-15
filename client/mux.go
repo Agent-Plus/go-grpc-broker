@@ -171,15 +171,15 @@ func (m *ServeMux) ServeMessage(w ResponseWriter, msg *Message) {
 	}
 }
 
-func (m *ServeMux) StartServe(topic, tag string, exc bool) Closer {
+func (m *ServeMux) StartServe(topic, tag string, mode ModeType) Closer {
 	return m.ExchangeClient.StartServe(func(msg *Message) {
 		m.ServeMessage(m.newResponse(topic, msg), msg)
-	}, topic, tag, exc)
+	}, topic, tag, mode)
 }
 
 func (m *ServeMux) PublishRequest(topic string, msg *Message, tags []string) (*Message, error) {
 	delivery, stop, tmOut := m.waitRPC.add(msg.Id, time.Now().Add(m.daedline))
-	err := m.Publish(topic, msg, tags)
+	_, err := m.Publish(topic, msg, tags, false)
 	if err != nil {
 		stop()
 		return nil, err
@@ -201,10 +201,12 @@ func (m *ServeMux) newResponse(topic string, msg *Message) *response {
 	rr := new(response)
 	rr.topic = topic
 	rr.mux = m
+	rr.corId = msg.Id
 	rr.msg = &Message{
 		Headers: make(Header),
 	}
 
+	rr.msg.Headers.SetString(headerResource, msg.Headers.GetString(headerResource))
 	rr.msg.Headers.SetInt64(headerAction, int64(actionNoop))
 	rr.msg.Headers.SetString(headerResponse, msg.Id)
 

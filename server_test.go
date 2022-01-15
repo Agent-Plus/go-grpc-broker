@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	"github.com/Agent-Plus/go-grpc-broker/api"
-	uuid "github.com/satori/go.uuid"
+	uuid "github.com/google/uuid"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -226,9 +226,9 @@ func TestConsume(t *testing.T) {
 
 	go func() {
 		for i := 1; i < 6; i++ {
-			_, err := pub.Publish("foo", &api.Message{
+			_, _, err := pub.Publish("foo", &api.Message{
 				Body: []byte(strconv.Itoa(i)),
-			}, nil)
+			}, nil, false)
 			if err != nil {
 				if _, ok := err.(*CircuitErrors); ok {
 					t.Log("WARN:", err)
@@ -281,8 +281,8 @@ func TestRPCDialog(t *testing.T) {
 		defer wg.Done()
 
 		res, err := cl.ch.Subscribe(cl.ctx, &api.SubscribeRequest{
-			Name:      "foo-rpc",
-			Exclusive: true,
+			Name: "foo-rpc",
+			Mode: api.SubscribeMode_RPCExclusive,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -302,12 +302,12 @@ func TestRPCDialog(t *testing.T) {
 		}
 
 		for i := 0; i < 3; i++ {
-			id := uuid.NewV4()
+			id := uuid.NewString()
 			_, err = cl.ch.Publish(cl.ctx, &api.PublishRequest{
 				Topic: "foo-rpc",
 				Message: &api.Message{
 					Body: []byte("ping"),
-					Id:   id.String(),
+					Id:   id,
 				},
 			})
 			if err != nil {
@@ -315,7 +315,7 @@ func TestRPCDialog(t *testing.T) {
 			}
 
 			ops.m.Lock()
-			ops.corids[id.String()] = 1
+			ops.corids[id] = 1
 			ops.m.Unlock()
 		}
 

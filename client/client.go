@@ -16,13 +16,32 @@ import (
 )
 
 var (
+	ErrInvalidArgument   = errors.New("invalid argument")
+	ErrNotConnected      = errors.New("not connected")
 	ErrServerUnavailable = errors.New("server unavailable")
 	ErrTimeout           = errors.New("timeout")
 	ErrUnauthenticated   = errors.New("unauthenticated")
 )
 
+// ModeType describes subscription type
+type ModeType uint8
+
+// Fanout is default subscription mode where each consumer recieves message
+const FanoutMode ModeType = 0
+
+const (
+	// RPCMode is subscription where in the topic is one consumer and many publishers
+	RPCMode ModeType = 1 << iota
+
+	// ExclusiveMode is RPC where conversation one to one
+	ExclusiveMode
+)
+
 type ExchangeClient struct {
 	api api.ExchangeClient
+
+	// connection
+	conn *grpc.ClientConn
 
 	// server address
 	address string
@@ -51,6 +70,13 @@ func New(opt ...ClientOption) *ExchangeClient {
 	return c
 }
 
+func (ec *ExchangeClient) Close() error {
+	if ec.conn != nil {
+		return ec.conn.Close()
+	}
+	return ErrNotConnected
+}
+
 func (ec *ExchangeClient) Dial(addr string, opt ...grpc.DialOption) error {
 	opts := make([]grpc.DialOption, 1, len(opt)+1)
 	opts[0] = grpc.WithInsecure()
@@ -63,6 +89,7 @@ func (ec *ExchangeClient) Dial(addr string, opt ...grpc.DialOption) error {
 
 	ec.address = addr
 	ec.api = api.NewExchangeClient(conn)
+	ec.conn = conn
 
 	return nil
 }
@@ -73,6 +100,7 @@ func (ec *ExchangeClient) DialContext(ctx context.Context, target string, opts .
 		return err
 	}
 	ec.api = api.NewExchangeClient(conn)
+	ec.conn = conn
 
 	return nil
 }
@@ -164,12 +192,36 @@ type Message struct {
 
 	// Id is message identifier
 	Id string
+
+	corId string
 }
 
 func NewMessage() *Message {
 	return &Message{
 		Headers: make(Header),
 	}
+}
+
+func newMessageFromApi(msg *api.Message) *Message {
+	m := &Message{
+		Err:   msg.Error,
+		Id:    msg.Id,
+		corId: msg.CorId,
+	}
+
+	if ln := len(msg.Body); ln > 0 {
+		m.Body = make([]byte, ln)
+		copy(m.Body, msg.Body)
+	}
+
+	if ln := len(msg.Headers); ln > 0 {
+		m.Headers = make(Header, ln)
+		for k, v := range msg.Headers {
+			m.Headers[k] = strings.Split(v, headerValuesDelimitger)
+		}
+	}
+
+	return m
 }
 
 // Action returns the value of the header `rpc-action` if was set
@@ -227,35 +279,18 @@ func readStrem(stream api.Exchange_ConsumeClient, worker *streamWorker) {
 				return
 			}
 
-			m := &Message{
-				Err: msg.Error,
-				Id:  msg.Id,
-			}
-
-			if ln := len(msg.Body); ln > 0 {
-				m.Body = make([]byte, ln)
-				copy(m.Body, msg.Body)
-			}
-
-			if ln := len(msg.Headers); ln > 0 {
-				m.Headers = make(Header, ln)
-				for k, v := range msg.Headers {
-					m.Headers[k] = strings.Split(v, headerValuesDelimitger)
-				}
-			}
-
-			worker.deliver <- m
+			worker.deliver <- newMessageFromApi(msg)
 		}
 	}
 }
 
-func (ec *ExchangeClient) Publish(topic string, msg *Message, tags []string) error {
+func (ec *ExchangeClient) Publish(topic string, msg *Message, tags []string, wait bool) (*Message, error) {
 	ec.aa.Lock()
 	err := ec.aa.do(ec.api)
 	ec.aa.Unlock()
 
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	ctx := ec.metadata()
@@ -263,6 +298,7 @@ func (ec *ExchangeClient) Publish(topic string, msg *Message, tags []string) err
 	m := &api.Message{
 		Error: msg.Err,
 		Id:    msg.Id,
+		CorId: msg.corId,
 	}
 
 	if ln := len(msg.Body); ln > 0 {
@@ -277,24 +313,30 @@ func (ec *ExchangeClient) Publish(topic string, msg *Message, tags []string) err
 		}
 	}
 
-	_, err = ec.api.Publish(ctx, &api.PublishRequest{
+	var res *api.PublishResponse
+	res, err = ec.api.Publish(ctx, &api.PublishRequest{
 		Topic:   topic,
 		Tag:     tags,
 		Message: m,
+		Wait:    wait,
 	})
 	if err != nil {
-		return onError(err)
+		return nil, onError(err)
 	}
 
-	return nil
+	if wait && res.Message != nil {
+		return newMessageFromApi(res.Message), nil
+	}
+
+	return nil, nil
 }
 
-func (ec *ExchangeClient) Subscribe(name, tag string, exc bool) (string, error) {
+func (ec *ExchangeClient) Subscribe(name, tag string, mode ModeType) (string, error) {
 	ctx := ec.metadata()
 	res, err := ec.api.Subscribe(ctx, &api.SubscribeRequest{
-		Name:      name,
-		Tag:       tag,
-		Exclusive: exc,
+		Name: name,
+		Tag:  tag,
+		Mode: api.SubscribeMode(mode),
 	})
 	if err != nil {
 		return "", onError(err)
@@ -307,11 +349,11 @@ func (ec *ExchangeClient) Subscribe(name, tag string, exc bool) (string, error) 
 type MessageHandlerFunc func(*Message)
 
 // StartServe is complex
-func (ec *ExchangeClient) StartServe(hd MessageHandlerFunc, name, tag string, exc bool) Closer {
+func (ec *ExchangeClient) StartServe(hd MessageHandlerFunc, name, tag string, mode ModeType) Closer {
 	o := &observer{
-		topic:     name,
-		tag:       tag,
-		exclusive: exc,
+		topic: name,
+		tag:   tag,
+		mode:  mode,
 
 		cl:     ec,
 		hd:     hd,
@@ -322,6 +364,16 @@ func (ec *ExchangeClient) StartServe(hd MessageHandlerFunc, name, tag string, ex
 	o.reconn <- 1
 
 	return o
+}
+
+func (ec *ExchangeClient) Unsubscribe(id string) error {
+	ctx := ec.metadata()
+	_, err := ec.api.Unsubscribe(ctx, &api.UnsubscribeRequest{Id: id})
+	if err != nil {
+		return onError(err)
+	}
+
+	return nil
 }
 
 const (
@@ -339,9 +391,9 @@ func rotatebit(i int8) int8 {
 }
 
 type observer struct {
-	topic     string
-	tag       string
-	exclusive bool
+	mode  ModeType
+	topic string
+	tag   string
 
 	// client connection
 	cl *ExchangeClient
@@ -365,6 +417,13 @@ func (o *observer) Close() {
 	o.reconn <- 0
 }
 
+func (o *observer) close(sid string) {
+	if o.serving.isSet() {
+		o.serving.setFalse()
+		o.cl.Unsubscribe(sid)
+	}
+}
+
 func (o *observer) serve(sid string) {
 	var (
 		err      error
@@ -376,6 +435,7 @@ func (o *observer) serve(sid string) {
 
 		// stop signal
 		if (state & startBit) == 0 {
+			o.close(sid)
 			return
 		}
 
@@ -414,6 +474,7 @@ func (o *observer) read(sid string, delivery <-chan *Message) {
 		case state := <-o.reconn:
 			// stop signal
 			if (state & startBit) == 0 {
+				o.close(sid)
 				return
 			}
 
@@ -442,7 +503,7 @@ func (o *observer) calls(sid string) (dlv <-chan *Message, id string, err error)
 	}
 
 	if !o.serving.isSet() {
-		id, err = o.cl.Subscribe(o.topic, o.tag, o.exclusive)
+		id, err = o.cl.Subscribe(o.topic, o.tag, o.mode)
 		if err != nil {
 			return
 		}
@@ -465,6 +526,11 @@ func onError(err error) error {
 
 		case codes.Unavailable:
 			err = fmt.Errorf("%v: %w", err, ErrServerUnavailable)
+
+		case codes.InvalidArgument:
+			err = fmt.Errorf("%v: %w", err, ErrInvalidArgument)
+
+		case codes.AlreadyExists:
 		}
 	}
 

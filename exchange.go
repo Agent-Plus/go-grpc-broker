@@ -1,32 +1,39 @@
 package broker
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 
-	uuid "github.com/satori/go.uuid"
+	uuid "github.com/google/uuid"
 )
 
 var (
-	// ErrChannelNotConsumed is raised on sending to channel with flag false `pulling`
+	// ErrAttempExceeded is raised when consumer cannot receive message and attempts to deliver were exceeded
+	ErrAttempExceeded = errors.New("attempt exceeded")
+
+	// ErrChangeTopicMode is raised when new subscriber tries to change existing topic mode
+	ErrChangeTopicMode = errors.New("cannot change topic mode")
+
+	// ErrChannelNotConsumed is raised in the topics with none FanoutMode:
+	// - publisher is not consumed to the topic with ExclusiveMode
+	// - there is no consumer in the topic with RPCMode or ExclusiveMode
 	ErrChannelNotConsumed = errors.New("channel not consumed")
+
+	// ErrDeliveryTimeout is raised when consumer channel does not pull message in time
+	ErrDeliveryTimeout = errors.New("delivery timeout")
 
 	// ErrInvalidUserPass is raised on invalid authentication: unknown user or wrong password
 	ErrInvalidUserPass = errors.New("invalid users name or password")
 
-	// ErrNotSubscribedExclusive is raised on `Publish` action when publisher attempts to write
-	// to the exclusive channel without subscription to its
-	ErrNotSubscribedExclusive = errors.New("not subscribed to exclusive")
-
-	// ErrSubscribeRPCFull is raised to reject more than two subscriptions to the exclusive channel
-	ErrSubscribeExclusiveFull = errors.New("exclusive topic is full")
-
-	// ErrPublishExclusiveNotConsumed is raised on `Publish` to exclusive topic where topic hasn't receiver
-	ErrPublishExclusiveNotConsumed = errors.New("exclusive topic not consumed")
-
 	// ErrSubscribeStandAloneChannel rejects `Subscribe` action for the channel which is not in the `Exchange` scope.
 	ErrStandAloneChannel = errors.New("stand alone channel")
+
+	// ErrSubscribeRPCFull is raised when subscription attempt is rejected at any reason
+	ErrSubscribeRejected = errors.New("subscribe rejected")
 
 	// ErrUknonwChannel is raised on attempt to retreive uknown channel by token identifier from registry
 	ErrUknonwChannel = errors.New("uknown channel")
@@ -60,7 +67,7 @@ func New() *Exchange {
 
 // Channel retreives channel by its GID token
 func (ex *Exchange) Channel(tk string) (*Channel, error) {
-	id, err := uuid.FromString(tk)
+	id, err := uuid.Parse(tk)
 	if err != nil {
 		return nil, err
 	}
@@ -77,8 +84,8 @@ func (ex *Exchange) Channel(tk string) (*Channel, error) {
 
 // AddChannel appends given Channel to the exchange scope
 func (ex *Exchange) AddChannel(ch *Channel) {
-	if uuid.Equal(ch.token, uuid.UUID{}) {
-		ch.token = uuid.NewV4()
+	if bytes.Equal(ch.token[:], uuid.Nil[:]) {
+		ch.token = uuid.New()
 	}
 	ch.ex = ex
 
@@ -88,7 +95,7 @@ func (ex *Exchange) AddChannel(ch *Channel) {
 }
 
 func (ex *Exchange) CloseChannel(id uuid.UUID) {
-	if uuid.Equal(id, uuid.UUID{}) {
+	if bytes.Equal(id[:], uuid.Nil[:]) {
 		return
 	}
 
@@ -104,31 +111,8 @@ func (ex *Exchange) CloseChannel(id uuid.UUID) {
 	ch.mutex.Lock()
 	defer ch.mutex.Unlock()
 
-	// gather all topics where channel is subscribed.
-	// drop read
-	tps := make([]string, 0, len(ch.pool))
-	for id, d := range ch.pool {
-		// drop ready
-		ch.closeConsume(id)
-		// delete object
-		delete(ch.pool, id)
-		// store topic name
-		tps = append(tps, d.tpName)
-	}
-
-	// remove all subscriptions
-	for _, name := range tps {
-		tp := ex.topic(name)
-
-		for idx, d := range tp.dlv.registry {
-			if d != nil && !uuid.Equal(d.chId, ch.token) {
-				continue
-			}
-
-			tp.dlv.Lock()
-			tp.dlv.removeAt(idx)
-			tp.dlv.Unlock()
-		}
+	for id, _ := range ch.consumes {
+		ex.unsubscribe(ch, id)
 	}
 
 	// remove from registry
@@ -139,41 +123,25 @@ func (ex *Exchange) CloseChannel(id uuid.UUID) {
 	ch.ex = nil
 }
 
-func (ex *Exchange) send(ctx context.Context, pb *publisher) error {
+func (ex *Exchange) send(ctx context.Context, pb *publisher) (err error) {
 	tp := ex.topic(pb.topic)
 	if tp == nil {
-		return ErrUnknonwTopic
+		err = ErrUnknonwTopic
+		return
 	}
 
-	if tp.exclusive {
-		fnd := 0
+	switch tp.mode & (RPCMode | ExclusiveMode) {
+	case 0:
+		err = tp.doFanout(ctx, pb)
+	default:
+		err = tp.doRPC(ctx, pb)
 
-		tp.dlv.Lock()
-		rgs := tp.dlv.registry
-		tp.dlv.Unlock()
-
-		for _, d := range rgs {
-			if uuid.Equal(pb.channel.token, d.chId) {
-				// sender is subscribed to this exclusive, next step is available
-				fnd++
-				break
-			}
-		}
-
-		if fnd == 0 {
-			return ErrNotSubscribedExclusive
+		if err == nil && (tp.mode&(RPCMode|ExclusiveMode)) != 0 && pb.ack == 0 {
+			err = fmt.Errorf("target topic=(%s): %w", tp.name, ErrChannelNotConsumed)
 		}
 	}
 
-	tp.dlv.Lock()
-	err := tp.send(ctx, pb)
-	tp.dlv.Unlock()
-
-	if err == nil && tp.exclusive && pb.ack == 0 {
-		err = ErrPublishExclusiveNotConsumed
-	}
-
-	return err
+	return
 }
 
 // Validate implements Authenticator interface
@@ -194,11 +162,12 @@ func (da *DummyAuthentication) Validate(client, secret string) (ok bool, err err
 }
 
 // CircuitErrors represents the collection of the errors heppends during loop.
-// This CircuitErrors can be raised while going circute of the topic subscribers
+// This CircuitErrors can be raised while processing consumers circuit in the topic
 // and some receiver taked long time to receive message.
 //
 // Maybe used as warning or debug information.
 type CircuitErrors struct {
+	sync.Mutex
 	err []error
 }
 
