@@ -120,7 +120,7 @@ type response struct {
 	mux   *ServeMux
 	msg   *Message
 	topic string
-	sent  bool
+	corId string
 }
 
 func (rr *response) Header() Header {
@@ -145,10 +145,13 @@ func (rr *response) SetBody(bd []byte) {
 // Publish implements ExchangeClient Publish method to make ResponseWriter
 // in the HandlerFunc more flexible, it's posible to publish any message into any topic.
 func (rr *response) Publish(topic string, msg *Message, tags []string) error {
-	return rr.mux.Publish(topic, msg, tags)
+	_, err := rr.mux.Publish(topic, msg, tags, false)
+	return err
 }
 
 // PublishResponse responses with prepared message to the publisher topic
 func (rr *response) PublishResponse() error {
-	return rr.mux.Publish(rr.topic, rr.msg, nil)
+	rr.msg.corId = rr.corId
+	_, err := rr.mux.Publish(rr.topic, rr.msg, nil, false)
+	return err
 }
