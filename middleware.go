@@ -94,7 +94,7 @@ func LogUnaryInterceptor(il Logger) grpc.UnaryServerInterceptor {
 				err = nil
 			} else {
 				il.Errorf(
-					"finished unary in %v, conn=(%s), method=(%s): %v",
+					"conn=(%s), method=(%s): %v",
 					conId,
 					info.FullMethod,
 					err,
