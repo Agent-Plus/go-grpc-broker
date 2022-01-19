@@ -117,10 +117,12 @@ type ResponseWriter interface {
 }
 
 type response struct {
-	mux   *ServeMux
-	msg   *Message
-	topic string
+	mux *ServeMux
+
 	corId string
+	msg   *Message
+	sent  bool
+	topic string
 }
 
 func (rr *response) Header() Header {
@@ -150,8 +152,13 @@ func (rr *response) Publish(topic string, msg *Message, tags []string) error {
 }
 
 // PublishResponse responses with prepared message to the publisher topic
-func (rr *response) PublishResponse() error {
-	rr.msg.corId = rr.corId
-	_, err := rr.mux.Publish(rr.topic, rr.msg, nil, false)
+func (rr *response) PublishResponse() (err error) {
+	if !rr.sent {
+		rr.msg.corId = rr.corId
+		rr.sent = true
+
+		_, err = rr.mux.Publish(rr.topic, rr.msg, nil, false)
+	}
+
 	return err
 }
