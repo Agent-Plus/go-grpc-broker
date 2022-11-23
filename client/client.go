@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/stats"
 	"google.golang.org/grpc/status"
 )
 
@@ -78,8 +79,11 @@ func (ec *ExchangeClient) Close() error {
 }
 
 func (ec *ExchangeClient) Dial(addr string, opt ...grpc.DialOption) error {
-	opts := make([]grpc.DialOption, 1, len(opt)+1)
-	opts[0] = grpc.WithInsecure()
+	opts := make([]grpc.DialOption, 0, len(opt)+2)
+	if ec.aa != nil {
+		opts = append(opts, grpc.WithStatsHandler(ec.aa))
+	}
+	opts = append(opts, grpc.WithInsecure())
 	opts = append(opts, opt...)
 
 	conn, err := grpc.Dial(addr, opts...)
@@ -159,6 +163,20 @@ func (a *authentication) reset() {
 	a.Lock()
 	a.token = ""
 	a.Unlock()
+}
+
+func (a *authentication) TagConn(ctx context.Context, info *stats.ConnTagInfo) context.Context {
+	return ctx
+}
+func (a *authentication) HandleConn(ctx context.Context, s stats.ConnStats) {
+	if _, ok := s.(*stats.ConnEnd); ok {
+		a.reset()
+	}
+}
+
+func (a *authentication) HandleRPC(ctx context.Context, s stats.RPCStats) {}
+func (a *authentication) TagRPC(ctx context.Context, info *stats.RPCTagInfo) context.Context {
+	return ctx
 }
 
 // Authenticate implements gRPC client Authentication method,
