@@ -211,7 +211,8 @@ func TestConsume(t *testing.T) {
 		for {
 			_, err := stream.Recv()
 			if err != nil {
-				t.Fatal(err)
+				t.Error(err)
+				return
 			}
 
 			atomic.AddInt32(&ops, 1)
@@ -285,16 +286,19 @@ func TestRPCDialog(t *testing.T) {
 			Mode: api.SubscribeMode_RPCExclusive,
 		})
 		if err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return
 		}
 
 		cl.stream, err = cl.ch.Consume(cl.ctx, &api.ConsumeRequest{Id: res.Id})
 		if err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return
 		}
 
 		if header, err := cl.stream.Header(); err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return
 		} else {
 			if v := header.Get("x-state"); len(v) > 0 && v[0] == "established" {
 				//t.Log("x-state:", v)
@@ -311,7 +315,8 @@ func TestRPCDialog(t *testing.T) {
 				},
 			})
 			if err != nil {
-				t.Fatal(err)
+				t.Error(err)
+				return
 			}
 
 			ops.m.Lock()
@@ -322,7 +327,8 @@ func TestRPCDialog(t *testing.T) {
 		for {
 			msg, err := cl.stream.Recv()
 			if err != nil {
-				t.Fatal(err)
+				t.Error(err)
+				return
 			}
 
 			if string(msg.Body) == "ping" {
@@ -333,7 +339,8 @@ func TestRPCDialog(t *testing.T) {
 					},
 				})
 				if err != nil {
-					t.Fatal(err)
+					t.Error(err)
+					return
 				}
 
 				ops.m.Lock()

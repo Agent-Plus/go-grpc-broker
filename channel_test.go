@@ -32,7 +32,8 @@ func TestFanoutMessages(t *testing.T) {
 			// subscribe receiver
 			id, err := ch.Subscribe("foo", "", 0)
 			if err != nil {
-				t.Fatal(err)
+				t.Error(err)
+				return nil
 			}
 
 			msg := ch.Consume(id)
@@ -84,7 +85,8 @@ func TestFanoutCircuitNonBreaking(t *testing.T) {
 			// subscribe receiver
 			id, err := ch.Subscribe("foo", "", 0)
 			if err != nil {
-				t.Fatalf("Subscribe(), error = %v", err)
+				t.Errorf("Subscribe(), error = %v", err)
+				return nil
 			}
 
 			msg := ch.Consume(id)
@@ -521,7 +523,8 @@ func TestPublishTagRouting(t *testing.T) {
 		// declare exclusive
 		sid, err := ch.Subscribe("foo", tag, 0)
 		if err != nil {
-			t.Fatal(err)
+			t.Error(err)
+			return
 		}
 
 		msg := ch.Consume(sid)

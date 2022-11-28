@@ -136,7 +136,7 @@ func (ex *Exchange) send(ctx context.Context, pb *publisher) (err error) {
 	default:
 		err = tp.doRPC(ctx, pb)
 
-		if err == nil && (tp.mode&(RPCMode|ExclusiveMode)) != 0 && pb.ack == 0 {
+		if err == nil && (tp.mode&(RPCMode|ExclusiveMode)) != 0 && pb.ackLoad() == 0 {
 			err = fmt.Errorf("target topic=(%s): %w", tp.name, ErrChannelNotConsumed)
 		}
 	}

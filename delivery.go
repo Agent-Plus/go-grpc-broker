@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/Agent-Plus/go-grpc-broker/api"
@@ -233,7 +232,7 @@ func (dp *deliveryPool) wrapTask(ctx context.Context, pb *publisher, dlv *delive
 				attempt++
 			}
 		} else {
-			atomic.AddInt32(&pb.ack, 1)
+			pb.ackAdd()
 		}
 
 		return

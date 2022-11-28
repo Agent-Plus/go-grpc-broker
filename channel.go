@@ -97,7 +97,7 @@ type publisher struct {
 	request *api.Message
 
 	// response message in case wait flag in Publish call
-	response *api.Message
+	response chan *api.Message
 
 	// tags
 	tags []string
@@ -107,20 +107,49 @@ type publisher struct {
 
 	// wait reponse on published message
 	// exclusive topic drops this flag in false
-	wait atomicBool
+	wait bool
+}
+
+func (pb *publisher) ackAdd() {
+	atomic.AddInt32(&pb.ack, 1)
+}
+
+func (pb *publisher) ackLoad() int {
+	return int(atomic.LoadInt32(&pb.ack))
 }
 
 func (pb *publisher) dest() {
 	pb.channel = nil
 	pb.request = nil
-	pb.response = nil
+
+	if pb.response != nil {
+		close(pb.response)
+	}
 }
 
 func (pb *publisher) recv(msg *api.Message) {
-	if msg != nil {
-		pb.response = msg
+	if pb.response != nil && pb.wait && msg != nil {
+		pb.response <- msg
 	}
-	pb.wait.setFalse()
+}
+
+func publisherResp(ctx context.Context, pb *publisher) (ack int, msg *api.Message, err error) {
+	if !pb.wait {
+		ack = pb.ackLoad()
+		return
+	}
+
+	dn := ctx.Done()
+
+	select {
+	case <-dn:
+		err = ctx.Err()
+	case msg = <-pb.response:
+	}
+
+	ack = pb.ackLoad()
+
+	return
 }
 
 // Publish sends given message to the given topic
@@ -148,35 +177,21 @@ func (ch *Channel) Publish(name string, msg *api.Message, tags []string, wait bo
 		request: msg,
 		tags:    tags,
 		topic:   name,
+		wait:    wait,
 	}
-	defer pb.dest()
 
 	if wait {
-		pb.wait.setTrue()
+		pb.response = make(chan *api.Message, 1)
 	}
+
+	defer pb.dest()
 
 	err = ex.send(ctx, pb)
 	if err != nil {
-		return int(pb.ack), nil, err
+		return pb.ackLoad(), nil, err
 	}
 
-	err = waiting(ctx, pb)
-	return int(pb.ack), pb.response, err
-}
-
-func waiting(ctx context.Context, pb *publisher) error {
-	dn := ctx.Done()
-
-	for {
-		select {
-		case <-dn:
-			return ctx.Err()
-		default:
-			if !pb.wait.isSet() {
-				return nil
-			}
-		}
-	}
+	return publisherResp(ctx, pb)
 }
 
 // StopConsume marks channel not ready to receive messages,

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"sync/atomic"
 
 	uuid "github.com/google/uuid"
 )
@@ -85,7 +84,7 @@ func (tp *topic) doRPC(ctx context.Context, pb *publisher) error {
 			wt.delete(pb.request.Id)
 		}
 		if err == nil {
-			atomic.AddInt32(&pb.ack, 1)
+			pb.ackAdd()
 		}
 
 		return err
@@ -93,7 +92,7 @@ func (tp *topic) doRPC(ctx context.Context, pb *publisher) error {
 }
 
 func waitingChanStore(pb *publisher, chId uuid.UUID, tMode modeType) *waitStore {
-	if tMode&(RPCMode|ExclusiveMode) != RPCMode || !pb.wait.isSet() {
+	if tMode&(RPCMode|ExclusiveMode) != RPCMode || !pb.wait {
 		return nil
 	}
 
