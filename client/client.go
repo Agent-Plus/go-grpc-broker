@@ -49,9 +49,6 @@ type ExchangeClient struct {
 
 	// authentication supplier
 	aa *authentication
-
-	// client is subscribed
-	subscribed string
 }
 
 type ClientOption interface {
@@ -360,7 +357,6 @@ func (ec *ExchangeClient) Subscribe(name, tag string, mode ModeType) (string, er
 		return "", onError(err)
 	}
 
-	ec.subscribed = name
 	return res.Id, nil
 }
 

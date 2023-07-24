@@ -85,10 +85,6 @@ func TestSubscribe(t *testing.T) {
 		t.Error(err)
 	}
 
-	if cl.subscribed != "foo" {
-		t.Error("empty subscription")
-	}
-
 	if len(id) == 0 {
 		t.Error("Subscribe did not return subscription id")
 	}
