@@ -32,7 +32,7 @@ func LogStreamInterceptor(il Logger) grpc.StreamServerInterceptor {
 
 		err := handler(srv, stream)
 
-		conId, _ := stream.Context().Value(connIdCtxKey).(uuid.UUID)
+		conId, _ := stream.Context().Value(ConnIdCtxKey).(uuid.UUID)
 		if err != nil {
 			code := status.Code(err)
 			il.Errorf(
@@ -62,7 +62,7 @@ func LogUnaryInterceptor(il Logger) grpc.UnaryServerInterceptor {
 
 		resp, err := handler(ctx, req)
 
-		conId, _ := ctx.Value(connIdCtxKey).(uuid.UUID)
+		conId, _ := ctx.Value(ConnIdCtxKey).(uuid.UUID)
 
 		fm := "finished unary in %v, conn=(%s), method=(%s)"
 		if v, ok := req.(*api.PublishRequest); ok && v != nil {

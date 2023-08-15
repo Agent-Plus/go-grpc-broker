@@ -20,13 +20,13 @@ import (
 type contextKey int
 
 const (
-	// connIdCtxKey is connection tag key
-	connIdCtxKey contextKey = iota
+	// ConnIdCtxKey is connection tag key
+	ConnIdCtxKey contextKey = iota
 )
 
 // Authenticator describes credentials validator
 type Authenticator interface {
-	Validate(string, string) (bool, error)
+	Validate(context.Context, string, string) (bool, error)
 }
 
 // DummyAuthentication represents the authentication stub in the tests.
@@ -59,7 +59,7 @@ type connStats struct {
 }
 
 func (h *connStats) TagConn(ctx context.Context, info *stats.ConnTagInfo) context.Context {
-	return context.WithValue(ctx, connIdCtxKey, uuid.New())
+	return context.WithValue(ctx, ConnIdCtxKey, uuid.New())
 }
 
 func (h *connStats) TagRPC(ctx context.Context, info *stats.RPCTagInfo) context.Context {
@@ -69,7 +69,7 @@ func (h *connStats) TagRPC(ctx context.Context, info *stats.RPCTagInfo) context.
 func (h *connStats) HandleConn(ctx context.Context, s stats.ConnStats) {
 	switch s.(type) {
 	case *stats.ConnEnd:
-		if id, ok := ctx.Value(connIdCtxKey).(uuid.UUID); ok {
+		if id, ok := ctx.Value(ConnIdCtxKey).(uuid.UUID); ok {
 			h.CloseChannel(id)
 		}
 		break
@@ -99,7 +99,7 @@ func NewExchangeServer(auth Authenticator, opt ...grpc.ServerOption) (s *Exchang
 
 // Authenticate implements api.ExchangeServer interface, authentication call.
 func (s *ExchangeServer) Authenticate(ctx context.Context, identity *api.Identity) (*api.Token, error) {
-	if ok, err := s.auth.Validate(identity.Id, identity.Secret); !ok {
+	if ok, err := s.auth.Validate(ctx, identity.Id, identity.Secret); !ok {
 		if errors.Is(err, ErrInvalidUserPass) {
 			return nil, status.Error(codes.Unauthenticated, err.Error())
 		}
@@ -107,7 +107,7 @@ func (s *ExchangeServer) Authenticate(ctx context.Context, identity *api.Identit
 	}
 
 	ch := NewChannel()
-	ch.token, _ = ctx.Value(connIdCtxKey).(uuid.UUID)
+	ch.token, _ = ctx.Value(ConnIdCtxKey).(uuid.UUID)
 	ch.cid = identity.Id
 
 	s.AddChannel(ch)
