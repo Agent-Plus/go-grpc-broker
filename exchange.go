@@ -145,7 +145,7 @@ func (ex *Exchange) send(ctx context.Context, pb *publisher) (err error) {
 }
 
 // Validate implements Authenticator interface
-func (da *DummyAuthentication) Validate(client, secret string) (ok bool, err error) {
+func (da *DummyAuthentication) Validate(ctx context.Context, client, secret string) (ok bool, err error) {
 	if len(da.users[client]) == 0 {
 		if da.strict {
 			err = ErrInvalidUserPass
@@ -179,4 +179,9 @@ func (e *CircuitErrors) Error() string {
 		buf.WriteString("\n")
 	}
 	return buf.String()
+}
+
+// Errs returns underlying errors list
+func (e *CircuitErrors) Errs() []error {
+	return e.err
 }
